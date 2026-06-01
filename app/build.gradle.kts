@@ -96,5 +96,11 @@ dependencies {
     // Encrypted storage for API keys
     implementation(libs.androidx.security.crypto)
 
+    // Core logic module
+    implementation(project(":core-logic"))
+
+    // Startup — required for disabling default WorkManager initializer
+    implementation(libs.androidx.startup)
+
     debugImplementation(libs.androidx.ui.tooling)
 }
