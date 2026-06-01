@@ -22,3 +22,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "AutoVoiceReader"
 include(":app")
+include(":core-logic")
