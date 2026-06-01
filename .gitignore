@@ -1,0 +1,19 @@
+# Gradle
+.gradle/
+build/
+**/build/
+local.properties
+
+# Android Studio
+.idea/
+*.iml
+.DS_Store
+
+# Keys / secrets
+*.jks
+*.keystore
+*.pk8
+google-services.json
+
+# Generated
+app/schemas/
