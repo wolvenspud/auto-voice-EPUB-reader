@@ -28,6 +28,7 @@ class ReaderPreferencesRepository @Inject constructor(
             playbackSpeed = prefs[Keys.PLAYBACK_SPEED] ?: 1.0f,
             autoScrollEnabled = prefs[Keys.AUTO_SCROLL_ENABLED] ?: true,
             autoScrollResumeDelaySecs = prefs[Keys.AUTO_SCROLL_RESUME_DELAY] ?: 4,
+            characterAttributionEnabled = prefs[Keys.CHARACTER_ATTRIBUTION_ENABLED] ?: false,
             synthesisWindowChars = prefs[Keys.SYNTHESIS_WINDOW_CHARS] ?: 80_000,
             synthesisEvictionTrailChars = prefs[Keys.SYNTHESIS_EVICTION_TRAIL_CHARS] ?: 10_000,
         )
@@ -54,6 +55,9 @@ class ReaderPreferencesRepository @Inject constructor(
     suspend fun updateAutoScrollResumeDelay(secs: Int) =
         context.dataStore.edit { it[Keys.AUTO_SCROLL_RESUME_DELAY] = secs }
 
+    suspend fun updateCharacterAttribution(enabled: Boolean) =
+        context.dataStore.edit { it[Keys.CHARACTER_ATTRIBUTION_ENABLED] = enabled }
+
     suspend fun updateSynthesisWindowChars(chars: Int) =
         context.dataStore.edit { it[Keys.SYNTHESIS_WINDOW_CHARS] = chars }
 
@@ -65,6 +69,7 @@ class ReaderPreferencesRepository @Inject constructor(
         val PLAYBACK_SPEED = floatPreferencesKey("playback_speed")
         val AUTO_SCROLL_ENABLED = booleanPreferencesKey("auto_scroll_enabled")
         val AUTO_SCROLL_RESUME_DELAY = intPreferencesKey("auto_scroll_resume_delay_secs")
+        val CHARACTER_ATTRIBUTION_ENABLED = booleanPreferencesKey("character_attribution_enabled")
         val SYNTHESIS_WINDOW_CHARS = intPreferencesKey("synthesis_window_chars")
         val SYNTHESIS_EVICTION_TRAIL_CHARS = intPreferencesKey("synthesis_eviction_trail_chars")
     }

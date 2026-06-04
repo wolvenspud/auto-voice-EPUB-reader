@@ -21,7 +21,22 @@ data class VoiceProfile(
     val externalVoiceId: String? = null,
     val estimatedGender: Gender? = null,
     val appearanceCount: Int = 0,
-)
+) {
+    companion object {
+        /** Appearance count at or above which an auto-discovered character is promoted to [CharacterTier.MAJOR]. */
+        const val MAJOR_TIER_THRESHOLD = 8
+
+        /** Deterministic pool of synthesis pitches used to give auto-discovered characters distinct voices. */
+        private val PITCH_POOL = floatArrayOf(0.82f, 0.9f, 0.98f, 1.08f, 1.18f, 1.28f)
+
+        /** Stable pitch derived from a character name, so the same character sounds consistent across imports. */
+        fun defaultPitchFor(name: String): Float {
+            val hash = name.fold(0) { acc, c -> acc * 31 + c.code }
+            val idx = ((hash % PITCH_POOL.size) + PITCH_POOL.size) % PITCH_POOL.size
+            return PITCH_POOL[idx]
+        }
+    }
+}
 
 enum class CharacterTier {
     /** User-configured, appears frequently. */

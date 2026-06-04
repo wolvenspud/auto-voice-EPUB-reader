@@ -47,10 +47,30 @@ interface TtsSegmentDao {
     /** Called when user corrects a speaker attribution via the character registry UI. */
     @Query("""
         UPDATE tts_segments
-        SET speakerTag = :speakerTag, voiceProfileId = :voiceProfileId, attributionSource = 'USER', attributionConfidence = 1.0
+        SET speakerTag = :speakerTag, voiceProfileId = :voiceProfileId,
+            attributionSource = 'USER', attributionConfidence = 1.0, needsResynthesis = 1
         WHERE spanId = :spanId
     """)
     suspend fun updateSpeaker(spanId: String, speakerTag: String, voiceProfileId: String)
+
+    /**
+     * Applies an attribution from an arbitrary source (e.g. LLM). Only flags the segment
+     * for re-synthesis when the assigned voice profile actually changed, to avoid needless work.
+     */
+    @Query("""
+        UPDATE tts_segments
+        SET speakerTag = :speakerTag, voiceProfileId = :voiceProfileId,
+            attributionSource = :source, attributionConfidence = :confidence,
+            needsResynthesis = CASE WHEN voiceProfileId = :voiceProfileId THEN needsResynthesis ELSE 1 END
+        WHERE spanId = :spanId
+    """)
+    suspend fun updateAttribution(
+        spanId: String,
+        speakerTag: String,
+        voiceProfileId: String,
+        source: String,
+        confidence: Float,
+    )
 
     /** Marks all segments using [profileId] as dirty after a voice profile change. */
     @Query("""

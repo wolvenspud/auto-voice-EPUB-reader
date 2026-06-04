@@ -67,9 +67,10 @@ class DialogueAnalyser {
         private val DIALOGUE_PATTERN = Regex("""[「『].*?[」』]""")
 
         // Speaker before opening bracket: "太郎は「" or "花子が「"
-        private val PRE_SPEAKER_PATTERN = Regex("""([^\s「」『』、。！？]{1,10})[はがもの](?=[「『])""")
+        // Require at least 2 chars so single stray characters aren't treated as speaker names.
+        private val PRE_SPEAKER_PATTERN = Regex("""([^\s「」『』、。！？]{2,10})[はがもの](?=[「『])""")
 
-        // Speaker after closing bracket: "」と花子が言った" — speaker follows bracket+と, precedes が/は/も
-        private val POST_SPEAKER_PATTERN = Regex("""[」』]と([^\s「」『』、。！？]{1,10})[はがも]""")
+        // Speaker after closing bracket: "」と花子が言った"
+        private val POST_SPEAKER_PATTERN = Regex("""[」』]と([^\s「」『』、。！？]{2,10})[はがも]""")
     }
 }

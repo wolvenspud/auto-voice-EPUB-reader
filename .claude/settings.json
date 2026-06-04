@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(journalctl -b *)",
+      "Bash(journalctl -k *)",
+      "Bash(journalctl --since *)",
+      "Bash(journalctl --list-boots *)",
+      "Bash(coredumpctl list)",
+      "Bash(coredumpctl list *)",
+      "Bash(coredumpctl info)",
+      "Bash(coredumpctl info *)",
+      "Bash(systemctl is-active *)"
+    ]
+  }
+}

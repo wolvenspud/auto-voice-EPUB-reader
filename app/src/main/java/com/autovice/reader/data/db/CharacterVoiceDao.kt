@@ -40,6 +40,10 @@ interface CharacterVoiceDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(voices: List<CharacterVoiceEntity>)
 
+    /** Adds profiles only when absent, preserving any existing user-tuned rows. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertNewOnly(voices: List<CharacterVoiceEntity>)
+
     @Update
     suspend fun update(voice: CharacterVoiceEntity)
 

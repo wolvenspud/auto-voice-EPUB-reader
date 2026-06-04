@@ -32,7 +32,7 @@ fun ScraperDialog(
 ) {
     var url by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
-    val sheetState = rememberModalBottomSheetState(skipPartialExpansion = true)
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,

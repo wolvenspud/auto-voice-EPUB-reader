@@ -21,6 +21,7 @@ import com.autovice.reader.domain.model.CharacterTier
 import com.autovice.reader.domain.model.SpeakerTag
 import com.autovice.reader.domain.model.TtsSegment
 import com.autovice.reader.domain.model.VoiceProfile
+import com.autovice.reader.domain.model.VoiceProfileIds
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
@@ -58,7 +59,10 @@ class ImportWorker @AssistedInject constructor(
             val processedDir = File(bookDir, "processed").also { it.mkdirs() }
             val processor = HtmlProcessor()
             val allSegments = mutableListOf<TtsSegment>()
-            val bookIdShort = bookId.replace("-", "").take(8)
+            val bookIdShort = VoiceProfileIds.shortBookId(bookId)
+            // Map original spine filenames to processed chapter indices so internal links can be
+            // rewritten to point at the processed ch_N.html files.
+            val chapterFileMap = parsed.chapters.associate { it.htmlFile.name to it.index }
 
             parsed.chapters.forEachIndexed { chapterIndex, chapter ->
                 val fraction = 0.15f + (chapterIndex.toFloat() / parsed.chapters.size) * 0.55f
@@ -69,7 +73,7 @@ class ImportWorker @AssistedInject constructor(
 
                 val htmlContent = readHtmlWithEncodingDetection(chapter.htmlFile)
                 val baseUrl = "file://${chapter.contentDir.absolutePath}/"
-                val result = processor.process(htmlContent, baseUrl, bookId, chapterIndex)
+                val result = processor.process(htmlContent, baseUrl, bookId, chapterIndex, chapterFileMap)
 
                 val outHtml = File(processedDir, "ch_$chapterIndex.html")
                 outHtml.writeText(result.html, Charsets.UTF_8)
@@ -83,7 +87,7 @@ class ImportWorker @AssistedInject constructor(
                             segmentIndex = segIndex,
                             rawText = seg.ttsText,
                             speakerTag = SpeakerTag.Narrator,
-                            voiceProfileId = "${bookIdShort}_narrator",
+                            voiceProfileId = VoiceProfileIds.narrator(bookIdShort),
                             attributionSource = AttributionSource.HEURISTIC,
                             attributionConfidence = 0.9f,
                         )
@@ -96,35 +100,29 @@ class ImportWorker @AssistedInject constructor(
             val analyser = DialogueAnalyser()
             val segmentsByChapter = allSegments.groupBy { it.chapterIndex }
             val annotatedSegments = allSegments.toMutableList()
+            val annotatedBySpanId = annotatedSegments.withIndex().associate { it.value.spanId to it.index }
 
             segmentsByChapter.forEach { (chapterIndex, chapterSegments) ->
                 val coreSegments = chapterSegments.map {
                     com.autovice.epub.ProcessedSegment(it.spanId, it.rawText, it.rawText.length)
                 }
                 val annotations = analyser.analyse(coreSegments, chapterIndex, bookId)
-                annotations.forEachIndexed { i, annotation ->
-                    val globalIdx = annotatedSegments.indexOfFirst { it.spanId == annotation.spanId }
-                    if (globalIdx >= 0) {
-                        val speakerTag = SpeakerTag.fromStorageString(annotation.speakerTag)
-                        val voiceProfileId = when (speakerTag) {
-                            is SpeakerTag.Narrator -> "${bookIdShort}_narrator"
-                            is SpeakerTag.UnknownDialogue -> "${bookIdShort}_unknown_dialogue"
-                            is SpeakerTag.InnerMonologue -> "${bookIdShort}_narrator"
-                            is SpeakerTag.Group -> "${bookIdShort}_group"
-                            is SpeakerTag.Character -> "${bookIdShort}_char_${speakerTag.name.take(8)}"
-                        }
-                        annotatedSegments[globalIdx] = annotatedSegments[globalIdx].copy(
-                            speakerTag = speakerTag,
-                            voiceProfileId = voiceProfileId,
-                            attributionSource = AttributionSource.HEURISTIC,
-                            attributionConfidence = annotation.confidence,
-                        )
-                    }
+                annotations.forEach { annotation ->
+                    val globalIdx = annotatedBySpanId[annotation.spanId] ?: return@forEach
+                    val speakerTag = SpeakerTag.fromStorageString(annotation.speakerTag)
+                    annotatedSegments[globalIdx] = annotatedSegments[globalIdx].copy(
+                        speakerTag = speakerTag,
+                        voiceProfileId = VoiceProfileIds.forSpeaker(bookIdShort, speakerTag),
+                        attributionSource = AttributionSource.HEURISTIC,
+                        attributionConfidence = annotation.confidence,
+                    )
                 }
             }
 
             setProgressAsync(workDataOf(KEY_PROGRESS_STEP to "Saving to database…", KEY_PROGRESS_FRACTION to 0.85f))
 
+            // Only create system profiles at import time. Character profiles are added later
+            // by the LLM attribution worker, keeping the registry clean until then.
             val systemProfiles = buildSystemProfiles(bookIdShort, bookId)
             voiceRepository.saveProfiles(bookId, systemProfiles)
             segmentRepository.insertAll(annotatedSegments)
@@ -174,21 +172,61 @@ class ImportWorker @AssistedInject constructor(
 
     private fun buildSystemProfiles(bookIdShort: String, bookId: String): List<VoiceProfile> = listOf(
         VoiceProfile(
-            profileId = "${bookIdShort}_narrator",
+            profileId = VoiceProfileIds.narrator(bookIdShort),
             characterName = "Narrator",
             tier = CharacterTier.SYSTEM,
         ),
         VoiceProfile(
-            profileId = "${bookIdShort}_unknown_dialogue",
+            profileId = VoiceProfileIds.unknownDialogue(bookIdShort),
             characterName = "Unknown Speaker",
             tier = CharacterTier.SYSTEM,
+            pitch = 1.1f,
         ),
         VoiceProfile(
-            profileId = "${bookIdShort}_group",
+            profileId = VoiceProfileIds.group(bookIdShort),
             characterName = "Group",
             tier = CharacterTier.SYSTEM,
         ),
     )
+
+    /**
+     * Materialises a [VoiceProfile] for every distinct character the heuristic analyser
+     * attributed lines to, so the character registry is populated and segments referencing
+     * `${bookIdShort}_char_*` IDs resolve to a real profile during synthesis.
+     */
+    private fun buildCharacterProfiles(
+        bookIdShort: String,
+        segments: List<TtsSegment>,
+    ): List<VoiceProfile> {
+        val counts = HashMap<String, Int>()
+        segments.forEach { seg ->
+            val tag = seg.speakerTag
+            if (tag is SpeakerTag.Character) {
+                counts[tag.name] = (counts[tag.name] ?: 0) + 1
+            }
+        }
+        // Collapse names that share a profile ID (truncation collision) onto the first seen name.
+        val byProfileId = LinkedHashMap<String, Pair<String, Int>>()
+        counts.forEach { (name, count) ->
+            val id = VoiceProfileIds.character(bookIdShort, name)
+            val existing = byProfileId[id]
+            if (existing == null) {
+                byProfileId[id] = name to count
+            } else {
+                byProfileId[id] = existing.first to (existing.second + count)
+            }
+        }
+        return byProfileId.map { (id, nameCount) ->
+            val (name, count) = nameCount
+            VoiceProfile(
+                profileId = id,
+                characterName = name,
+                tier = if (count >= VoiceProfile.MAJOR_TIER_THRESHOLD) CharacterTier.MAJOR else CharacterTier.MINOR,
+                pitch = VoiceProfile.defaultPitchFor(name),
+                appearanceCount = count,
+            )
+        }
+    }
 
     companion object {
         const val KEY_BOOK_ID = "bookId"

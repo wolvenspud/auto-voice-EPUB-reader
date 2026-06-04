@@ -8,6 +8,7 @@ import androidx.work.workDataOf
 import com.autovice.audio.WavProcessor
 import com.autovice.reader.data.repository.CharacterVoiceRepository
 import com.autovice.reader.data.repository.SegmentRepository
+import com.autovice.reader.domain.model.AttributionSource
 import com.autovice.reader.domain.model.VoiceProfile
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -43,13 +44,25 @@ class SynthesisWorker @AssistedInject constructor(
 
             val processedDir = File(context.filesDir, "epubs/$bookId/processed").also { it.mkdirs() }
             val tempDir = File(processedDir, "tmp_synth").also { it.mkdirs() }
+            // Discard WAVs from a previous run and any stale partial audio file.
+            tempDir.listFiles()?.forEach { it.delete() }
+            // Clear any partial files (incl. versioned) from a previous run.
+            processedDir.listFiles()?.filter {
+                it.name.startsWith("ch_${chapterIndex}_partial")
+            }?.forEach { it.delete() }
 
             val segmentWavFiles = mutableListOf<Pair<String, File>>()
             var cumulativeMs = 0L
+            var partialPathEmitted: String? = null
+            var partialVersion = 0
+            var nextPartialThreshold = INITIAL_BATCH
 
             segments.forEachIndexed { i, segment ->
+                // Always carry the partial path once known — WorkManager conflates progress updates,
+                // so a one-off emission can be dropped before the observer ever sees it.
                 setProgressAsync(workDataOf(
                     KEY_PROGRESS to i.toFloat() / segments.size,
+                    KEY_PARTIAL_AUDIO_PATH to partialPathEmitted,
                 ))
 
                 if (segment.audioStartMs >= 0 && !segment.needsResynthesis) {
@@ -62,7 +75,13 @@ class SynthesisWorker @AssistedInject constructor(
                     }
                 }
 
-                val profile = profileMap[segment.voiceProfileId] ?: defaultProfile()
+                // Only use character voices when attribution has been verified by the LLM;
+                // heuristic attribution frequently produces garbage speaker names.
+                val profile = when (segment.attributionSource) {
+                    AttributionSource.LLM, AttributionSource.USER ->
+                        profileMap[segment.voiceProfileId] ?: defaultProfile()
+                    else -> defaultProfile()
+                }
                 val tempWav = File(tempDir, "seg_${segment.segmentIndex}.wav")
                 val duration = voiceEngine.synthesiseToFile(segment.rawText, profile, tempWav)
                 if (duration < 0 || !tempWav.exists()) return@forEachIndexed
@@ -71,15 +90,52 @@ class SynthesisWorker @AssistedInject constructor(
                 val rawInfo = WavProcessor.readInfo(tempWav)
                 val pcmOnly = rawWavBytes.copyOfRange(rawWavBytes.size - rawInfo.dataBytes, rawWavBytes.size)
                 val trimmedPcm = WavProcessor.trimSilence(pcmOnly)
-                val info = WavProcessor.readInfo(tempWav)
-                val header = WavProcessor.buildWavHeader(info.sampleRate, info.channels, info.bitsPerSample, trimmedPcm.size)
-                tempWav.writeBytes(header + trimmedPcm)
+                // Normalise to a canonical format so segments from different TTS voices still concatenate,
+                // then fade the edges to avoid clicks where trimmed segments abut.
+                val normPcm = WavProcessor.applyEdgeFades(
+                    WavProcessor.normalisePcm16(trimmedPcm, rawInfo.sampleRate, rawInfo.channels),
+                    WavProcessor.CANONICAL_SAMPLE_RATE,
+                )
+                // Append a short silence after each segment so consecutive utterances don't
+                // click when abutted and natural inter-sentence spacing is preserved.
+                val finalPcm = WavProcessor.appendSilence(normPcm, WavProcessor.CANONICAL_SAMPLE_RATE, 40)
+                val header = WavProcessor.buildWavHeader(
+                    WavProcessor.CANONICAL_SAMPLE_RATE,
+                    WavProcessor.CANONICAL_CHANNELS,
+                    WavProcessor.CANONICAL_BITS,
+                    finalPcm.size,
+                )
+                tempWav.writeBytes(header + finalPcm)
                 val trimmedInfo = WavProcessor.readInfo(tempWav)
                 val trimmedDuration = WavProcessor.durationMs(trimmedInfo)
 
                 segmentRepository.updateAudioTimestamp(segment.spanId, cumulativeMs, trimmedDuration)
                 cumulativeMs += trimmedDuration
                 segmentWavFiles.add(Pair(segment.spanId, tempWav))
+
+                // Periodically encode a growing partial chapter file so the reader starts playing
+                // quickly and keeps playing as more audio is synthesised. Each version uses a new
+                // filename so the player reloads it (seamlessly, position preserved) rather than
+                // keeping the stale shorter file. Stops once we reach the final segment (full file
+                // is written below).
+                if (segmentWavFiles.size >= nextPartialThreshold && i < segments.size - 1) {
+                    runCatching {
+                        val version = ++partialVersion
+                        val pWav = File(processedDir, "ch_${chapterIndex}_partial_v$version.wav")
+                        val pAac = File(processedDir, "ch_${chapterIndex}_partial_v$version.aac")
+                        AudioConcatenator.concatenateWavs(segmentWavFiles.map { it.second }, pWav)
+                        AacEncoder.encodeWavToAac(pWav, pAac)
+                        pWav.delete()
+                        // Remove the previous version once the new one is ready.
+                        partialPathEmitted?.let { old -> File(old).delete() }
+                        partialPathEmitted = pAac.absolutePath
+                        nextPartialThreshold = segmentWavFiles.size + PARTIAL_GROW_STEP
+                        setProgressAsync(workDataOf(
+                            KEY_PROGRESS to segmentWavFiles.size.toFloat() / segments.size,
+                            KEY_PARTIAL_AUDIO_PATH to pAac.absolutePath,
+                        ))
+                    }.onFailure { e -> android.util.Log.w("SynthesisWorker", "Partial encode failed", e) }
+                }
             }
 
             val chapterWav = File(processedDir, "ch_$chapterIndex.wav")
@@ -90,9 +146,14 @@ class SynthesisWorker @AssistedInject constructor(
 
             chapterWav.delete()
             tempDir.listFiles()?.forEach { it.delete() }
+            // The full file supersedes every partial; remove them.
+            processedDir.listFiles()?.filter {
+                it.name.startsWith("ch_${chapterIndex}_partial")
+            }?.forEach { it.delete() }
 
             Result.success(workDataOf(KEY_AUDIO_PATH to chapterAac.absolutePath))
         } catch (e: Exception) {
+            android.util.Log.e("SynthesisWorker", "Synthesis failed", e)
             Result.failure(workDataOf(KEY_ERROR to (e.message ?: "Synthesis failed")))
         } finally {
             voiceEngine.release()
@@ -111,5 +172,10 @@ class SynthesisWorker @AssistedInject constructor(
         const val KEY_PROGRESS = "progress"
         const val KEY_ERROR = "error"
         const val KEY_AUDIO_PATH = "audioPath"
+        const val KEY_PARTIAL_AUDIO_PATH = "partialAudioPath"
+        /** Segments to synthesise before the first playable partial is emitted. */
+        private const val INITIAL_BATCH = 8
+        /** Additional segments between subsequent (growing) partial re-encodes. */
+        private const val PARTIAL_GROW_STEP = 12
     }
 }

@@ -15,5 +15,8 @@ local.properties
 *.pk8
 google-services.json
 
+# Claude Code — personal/local settings (shared settings.json is tracked)
+.claude/settings.local.json
+
 # Generated
 app/schemas/

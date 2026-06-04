@@ -24,10 +24,14 @@ class HtmlProcessor {
         baseUrl: String,
         bookId: String,
         chapterIndex: Int,
+        /** Maps original spine filenames (e.g. "chapter_0009.xhtml") to processed chapter indices. */
+        chapterFileMap: Map<String, Int> = emptyMap(),
     ): ProcessingResult {
         val doc = Jsoup.parse(htmlContent)
 
         doc.select("script").remove()
+
+        rewriteInternalLinks(doc, chapterFileMap)
 
         val segments = mutableListOf<ProcessedSegment>()
         var segmentIndex = 0
@@ -47,13 +51,14 @@ class HtmlProcessor {
 
                 val rawText = textNode.text()
                 if (rawText.isBlank()) continue
+                if (isPurelyDecorative(rawText)) continue
 
                 val sentences = splitSentences(rawText)
                 if (sentences.isEmpty()) continue
 
                 val replacementElements = mutableListOf<org.jsoup.nodes.Node>()
                 for (sentence in sentences) {
-                    if (sentence.trim().length < 2) {
+                    if (sentence.trim().length < 2 || isPurelyDecorative(sentence)) {
                         replacementElements.add(TextNode(sentence))
                         continue
                     }
@@ -161,10 +166,35 @@ class HtmlProcessor {
         return "${bookIdShort}_c${chapterIndex}_s${segmentIndex}"
     }
 
+    /**
+     * Rewrites internal chapter links (to original spine files) so they point at the processed
+     * `ch_{index}.html` files. The reader's WebView intercepts these and routes navigation through
+     * the ViewModel, which loads the processed (TTS-tagged, theme-aware) chapter — without this,
+     * links load the raw original xhtml: no playback spans and no dark-mode CSS.
+     */
+    private fun rewriteInternalLinks(doc: org.jsoup.nodes.Document, chapterFileMap: Map<String, Int>) {
+        if (chapterFileMap.isEmpty()) return
+        for (a in doc.select("a[href]")) {
+            val href = a.attr("href")
+            if (href.startsWith("http://") || href.startsWith("https://") || href.startsWith("mailto:")) continue
+            val anchor = href.substringAfter('#', "")
+            val fileName = href.substringBefore('#').substringAfterLast('/')
+            val index = chapterFileMap[fileName] ?: continue
+            a.attr("href", "ch_$index.html" + if (anchor.isNotEmpty()) "#$anchor" else "")
+        }
+    }
+
+    /** Returns true for strings that contain no letters or digits — e.g. ◆◆◆, ─────, ＊＊＊. */
+    private fun isPurelyDecorative(text: String): Boolean {
+        val stripped = text.trim()
+        return stripped.isNotEmpty() && stripped.none { c -> c.isLetterOrDigit() }
+    }
+
     private fun injectHeadContent(doc: org.jsoup.nodes.Document, baseUrl: String) {
         val head = doc.head()
 
         head.prepend("""<base href="$baseUrl">""")
+        head.prepend("""<meta name="viewport" content="width=device-width, initial-scale=1">""")
 
         head.append("""
 <style id="av-vars">
@@ -209,7 +239,9 @@ document.addEventListener('scroll', function() {
 }, {passive:true});
 document.addEventListener('click', function(e) {
   var seg = e.target.closest('.tts-seg');
-  if (seg && window.AndroidBridge) window.AndroidBridge.onSegmentTap(seg.id);
+  if (!window.AndroidBridge) return;
+  if (seg) window.AndroidBridge.onSegmentTap(seg.id);
+  else window.AndroidBridge.onBackgroundTap();
 });
 </script>
 """.trimIndent())

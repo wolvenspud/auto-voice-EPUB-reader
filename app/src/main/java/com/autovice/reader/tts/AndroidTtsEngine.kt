@@ -34,6 +34,9 @@ class AndroidTtsEngine(private val context: Context) : VoiceEngine {
                 val result = tts?.setLanguage(Locale.JAPANESE)
                 val langAvailable = result != TextToSpeech.LANG_MISSING_DATA &&
                         result != TextToSpeech.LANG_NOT_SUPPORTED
+                // Pin one offline voice so every segment shares the same audio format;
+                // mixing network + embedded voices yields incompatible WAVs that can't be concatenated.
+                if (langAvailable) tts?.let { pinStableOfflineVoice(it) }
                 _state.value = if (langAvailable) VoiceEngine.State.READY else VoiceEngine.State.ERROR
                 deferred.complete(langAvailable)
             } else {
@@ -42,6 +45,23 @@ class AndroidTtsEngine(private val context: Context) : VoiceEngine {
             }
         }
         deferred.await()
+    }
+
+    /**
+     * Selects a deterministic, installed, offline Japanese voice and pins it for the session.
+     * Without this, the engine may serve some segments from a network voice and others from an
+     * embedded one, producing WAVs with differing sample rates that fail concatenation.
+     */
+    private fun pinStableOfflineVoice(engine: TextToSpeech) {
+        runCatching {
+            val candidates = engine.voices?.filter { v ->
+                v.locale.language == Locale.JAPANESE.language &&
+                    !v.isNetworkConnectionRequired &&
+                    TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in v.features
+            }.orEmpty()
+            val chosen = candidates.maxWithOrNull(compareBy({ it.quality }, { it.name }))
+            chosen?.let { engine.voice = it }
+        }
     }
 
     override suspend fun synthesiseToFile(

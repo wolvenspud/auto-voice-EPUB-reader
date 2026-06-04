@@ -28,6 +28,16 @@ class SegmentRepository @Inject constructor(
     suspend fun updateSpeaker(spanId: String, speakerTag: SpeakerTag, voiceProfileId: String) =
         segmentDao.updateSpeaker(spanId, speakerTag.toStorageString(), voiceProfileId)
 
+    suspend fun updateAttribution(
+        spanId: String,
+        speakerTag: SpeakerTag,
+        voiceProfileId: String,
+        source: AttributionSource,
+        confidence: Float,
+    ) = segmentDao.updateAttribution(
+        spanId, speakerTag.toStorageString(), voiceProfileId, source.name, confidence,
+    )
+
     suspend fun getSegmentsNeedingResynthesis(bookId: String): List<TtsSegment> =
         segmentDao.getSegmentsNeedingResynthesis(bookId).map { it.toDomain() }
 

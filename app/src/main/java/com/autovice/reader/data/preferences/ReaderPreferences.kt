@@ -11,6 +11,11 @@ data class ReaderPreferences(
     /** Seconds of scroll inactivity before auto-scroll resumes. */
     val autoScrollResumeDelaySecs: Int = 4,
     /**
+     * Master switch for AI speaker attribution. When off, every line uses the narrator voice
+     * (no per-character voices), regardless of whether an API key is set.
+     */
+    val characterAttributionEnabled: Boolean = false,
+    /**
      * Rolling synthesis window size in source characters.
      * Synthesis advances until this many chars of audio are buffered ahead.
      * ~80k chars ≈ 50–60 min audio ≈ 15–20 MB Opus.

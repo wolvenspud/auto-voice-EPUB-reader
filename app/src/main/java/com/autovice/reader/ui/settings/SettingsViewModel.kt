@@ -2,6 +2,9 @@ package com.autovice.reader.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.autovice.reader.data.preferences.ApiKeyConfig
+import com.autovice.reader.data.preferences.ApiKeyStore
+import com.autovice.reader.data.preferences.LlmProvider
 import com.autovice.reader.data.preferences.ReaderPreferences
 import com.autovice.reader.data.preferences.ReaderPreferencesRepository
 import com.autovice.reader.data.preferences.ReaderTheme
@@ -15,6 +18,7 @@ import javax.inject.Inject
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val prefs: ReaderPreferencesRepository,
+    private val apiKeyStore: ApiKeyStore,
 ) : ViewModel() {
 
     val preferences: StateFlow<ReaderPreferences> = prefs.preferences.stateIn(
@@ -22,6 +26,14 @@ class SettingsViewModel @Inject constructor(
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = ReaderPreferences(),
     )
+
+    val apiKeyConfig: StateFlow<ApiKeyConfig> = apiKeyStore.config
+
+    fun updateClaudeKey(key: String) = apiKeyStore.setClaudeKey(key)
+
+    fun updateOpenAiKey(key: String) = apiKeyStore.setOpenAiKey(key)
+
+    fun updateLlmProvider(provider: LlmProvider) = apiKeyStore.setProvider(provider)
 
     fun updateFontSize(size: Float) {
         viewModelScope.launch { prefs.updateFontSize(size) }
@@ -45,5 +57,9 @@ class SettingsViewModel @Inject constructor(
 
     fun updateAutoScrollResumeDelay(secs: Int) {
         viewModelScope.launch { prefs.updateAutoScrollResumeDelay(secs) }
+    }
+
+    fun updateCharacterAttribution(enabled: Boolean) {
+        viewModelScope.launch { prefs.updateCharacterAttribution(enabled) }
     }
 }

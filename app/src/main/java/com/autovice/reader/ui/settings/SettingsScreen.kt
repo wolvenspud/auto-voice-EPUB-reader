@@ -13,22 +13,32 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.autovice.reader.data.preferences.LlmProvider
 import com.autovice.reader.data.preferences.ReaderTheme
 import kotlin.math.roundToInt
 
@@ -39,6 +49,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val prefs by viewModel.preferences.collectAsState()
+    val apiKey by viewModel.apiKeyConfig.collectAsState()
 
     Scaffold(
         topBar = {
@@ -132,6 +143,52 @@ fun SettingsScreen(
                 }
             }
 
+            SettingsSection(title = "AI speaker attribution") {
+                SettingsRow(label = "Character attribution") {
+                    Switch(
+                        checked = prefs.characterAttributionEnabled,
+                        onCheckedChange = viewModel::updateCharacterAttribution,
+                    )
+                }
+                Text(
+                    text = "When off, every line is read by the narrator voice. When on, dialogue is " +
+                        "attributed to per-character voices using the API key below.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                SettingsRow(label = "Provider") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = apiKey.provider == LlmProvider.CLAUDE,
+                            onClick = { viewModel.updateLlmProvider(LlmProvider.CLAUDE) },
+                            label = { Text("Claude") },
+                        )
+                        FilterChip(
+                            selected = apiKey.provider == LlmProvider.OPENAI,
+                            onClick = { viewModel.updateLlmProvider(LlmProvider.OPENAI) },
+                            label = { Text("OpenAI") },
+                        )
+                    }
+                }
+                ApiKeyField(
+                    label = "Claude API key",
+                    initialValue = apiKey.claudeKey,
+                    onValueChange = viewModel::updateClaudeKey,
+                )
+                ApiKeyField(
+                    label = "OpenAI API key",
+                    initialValue = apiKey.openAiKey,
+                    onValueChange = viewModel::updateOpenAiKey,
+                )
+                Text(
+                    text = "Keys are stored encrypted on-device and used only to attribute dialogue speakers.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+
             SettingsSection(title = "Advanced") {
                 SettingsInfoRow(
                     label = "Synthesis window",
@@ -144,6 +201,37 @@ fun SettingsScreen(
             }
         }
     }
+}
+
+@Composable
+private fun ApiKeyField(
+    label: String,
+    initialValue: String,
+    onValueChange: (String) -> Unit,
+) {
+    // Seeded once from the stored value; edits commit straight to the encrypted store.
+    var text by remember { mutableStateOf(initialValue) }
+    var visible by remember { mutableStateOf(false) }
+    OutlinedTextField(
+        value = text,
+        onValueChange = {
+            text = it
+            onValueChange(it)
+        },
+        label = { Text(label) },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+        visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+        trailingIcon = {
+            IconButton(onClick = { visible = !visible }) {
+                Icon(
+                    imageVector = if (visible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                    contentDescription = if (visible) "Hide key" else "Show key",
+                )
+            }
+        },
+    )
 }
 
 @Composable

@@ -96,6 +96,9 @@ dependencies {
     // Encrypted storage for API keys
     implementation(libs.androidx.security.crypto)
 
+    // HTTP client for LLM speaker-attribution calls
+    implementation(libs.okhttp)
+
     // Core logic module
     implementation(project(":core-logic"))
 

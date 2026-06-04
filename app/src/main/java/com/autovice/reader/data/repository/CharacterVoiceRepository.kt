@@ -28,6 +28,11 @@ class CharacterVoiceRepository @Inject constructor(
         voiceDao.insertAll(profiles.map { CharacterVoiceEntity.fromDomain(it, bookId) })
     }
 
+    /** Inserts profiles that don't yet exist, leaving already-customised profiles untouched. */
+    suspend fun addMissingProfiles(bookId: String, profiles: List<VoiceProfile>) {
+        voiceDao.insertNewOnly(profiles.map { CharacterVoiceEntity.fromDomain(it, bookId) })
+    }
+
     suspend fun updateProfile(bookId: String, profile: VoiceProfile) {
         voiceDao.update(CharacterVoiceEntity.fromDomain(profile, bookId))
     }

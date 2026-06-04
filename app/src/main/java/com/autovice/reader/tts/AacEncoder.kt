@@ -11,7 +11,7 @@ import java.nio.ByteOrder
 
 object AacEncoder {
 
-    fun encodeWavToAac(wavFile: File, outputFile: File, bitRate: Int = 64_000) {
+    fun encodeWavToAac(wavFile: File, outputFile: File, bitRate: Int = 128_000) {
         val wavInfo = WavProcessor.readInfo(wavFile)
         val wavBytes = wavFile.readBytes()
 
@@ -37,6 +37,8 @@ object AacEncoder {
 
         val pcmBuffer = ByteBuffer.wrap(pcmData).order(ByteOrder.LITTLE_ENDIAN)
         val inputChunkSize = 2048
+        val bytesPerFrame = (channelCount * wavInfo.bitsPerSample / 8).coerceAtLeast(1)
+        var framesEncoded = 0L
         var inputDone = false
         var outputDone = false
         val bufferInfo = MediaCodec.BufferInfo()
@@ -53,9 +55,14 @@ object AacEncoder {
                         val chunk = ByteArray(toRead)
                         pcmBuffer.get(chunk)
                         buf.put(chunk)
-                        codec.queueInputBuffer(inputIdx, 0, toRead, 0, 0)
+                        // Presentation timestamp must advance by the number of audio frames consumed,
+                        // otherwise the muxed AAC has broken timing (crackle) and ~zero duration.
+                        val ptsUs = framesEncoded * 1_000_000L / sampleRate
+                        codec.queueInputBuffer(inputIdx, 0, toRead, ptsUs, 0)
+                        framesEncoded += toRead / bytesPerFrame
                     } else {
-                        codec.queueInputBuffer(inputIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        val ptsUs = framesEncoded * 1_000_000L / sampleRate
+                        codec.queueInputBuffer(inputIdx, 0, 0, ptsUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         inputDone = true
                     }
                 }

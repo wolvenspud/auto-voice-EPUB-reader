@@ -6,6 +6,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.autovice.reader.ui.character.CharacterVoiceScreen
 import com.autovice.reader.ui.library.LibraryScreen
 import com.autovice.reader.ui.reader.ReaderScreen
 import com.autovice.reader.ui.settings.SettingsScreen
@@ -36,12 +37,26 @@ fun AppNavigation() {
             val bookId = backStackEntry.arguments?.getString("bookId") ?: return@composable
             ReaderScreen(
                 bookId = bookId,
-                onNavigateBack = { navController.popBackStack() }
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToCharacters = { chapterIndex ->
+                    navController.navigate(Screen.Characters.createRoute(bookId, chapterIndex))
+                },
+                onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
             )
         }
 
         composable(Screen.Settings.route) {
             SettingsScreen(onNavigateBack = { navController.popBackStack() })
+        }
+
+        composable(
+            route = Screen.Characters.route,
+            arguments = listOf(
+                navArgument("bookId") { type = NavType.StringType },
+                navArgument("chapterIndex") { type = NavType.StringType },
+            )
+        ) {
+            CharacterVoiceScreen(onNavigateBack = { navController.popBackStack() })
         }
     }
 }
