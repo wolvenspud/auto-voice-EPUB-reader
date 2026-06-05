@@ -16,6 +16,12 @@ data class ReaderPreferences(
      */
     val characterAttributionEnabled: Boolean = false,
     /**
+     * Base URL of the VOICEVOX engine the app synthesises against. Defaults to the PC running the
+     * bundled `voicevox-server` on the LAN; editable in Settings for a different host/IP (e.g.
+     * `http://10.0.2.2:50021` to reach the host from an emulator).
+     */
+    val voicevoxBaseUrl: String = "http://192.168.0.161:50021",
+    /**
      * Rolling synthesis window size in source characters.
      * Synthesis advances until this many chars of audio are buffered ahead.
      * ~80k chars ≈ 50–60 min audio ≈ 15–20 MB Opus.

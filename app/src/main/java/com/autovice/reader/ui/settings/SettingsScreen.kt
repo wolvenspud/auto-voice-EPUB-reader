@@ -189,6 +189,24 @@ fun SettingsScreen(
                 )
             }
 
+            SettingsSection(title = "VOICEVOX") {
+                var url by remember { mutableStateOf(prefs.voicevoxBaseUrl) }
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it; viewModel.updateVoicevoxUrl(it) },
+                    label = { Text("Engine URL") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    text = "Base URL of a running VOICEVOX engine. Default reaches the host machine " +
+                        "from the emulator (10.0.2.2); use a LAN/remote address for a physical device.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+
             SettingsSection(title = "Advanced") {
                 SettingsInfoRow(
                     label = "Synthesis window",

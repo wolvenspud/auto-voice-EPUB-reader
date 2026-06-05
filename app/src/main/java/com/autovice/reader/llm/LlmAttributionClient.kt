@@ -33,14 +33,18 @@ class LlmAttributionClient @Inject constructor(
     private val http: OkHttpClient,
 ) {
 
+    /** A previously-attributed lead-in line, shown to keep turn-taking coherent across chunks. */
+    data class LeadInLine(val segmentIndex: Int, val text: String, val speaker: String)
+
     suspend fun attribute(
         provider: LlmProvider,
         apiKey: String,
         lines: List<AttributionLine>,
         knownCharacters: List<String>,
+        leadIn: List<LeadInLine> = emptyList(),
     ): List<AttributionResult> = withContext(Dispatchers.IO) {
         if (lines.isEmpty()) return@withContext emptyList()
-        val userPrompt = buildUserPrompt(lines, knownCharacters)
+        val userPrompt = buildUserPrompt(lines, knownCharacters, leadIn)
         val modelText = when (provider) {
             LlmProvider.CLAUDE -> callClaude(apiKey, userPrompt)
             LlmProvider.OPENAI -> callOpenAi(apiKey, userPrompt)
@@ -48,12 +52,19 @@ class LlmAttributionClient @Inject constructor(
         parseAttributions(modelText)
     }
 
-    private fun buildUserPrompt(lines: List<AttributionLine>, knownCharacters: List<String>): String {
+    private fun buildUserPrompt(
+        lines: List<AttributionLine>,
+        knownCharacters: List<String>,
+        leadIn: List<LeadInLine>,
+    ): String {
         val sb = StringBuilder()
-        if (knownCharacters.isNotEmpty()) {
-            sb.append("Known characters: ").append(knownCharacters.joinToString("、")).append("\n\n")
-        }
-        sb.append("Transcript (each line prefixed with [segment index]):\n")
+        sb.append("CHARACTER ROSTER SO FAR:\n")
+        if (knownCharacters.isEmpty()) sb.append("(none yet)\n")
+        else knownCharacters.forEach { sb.append("- ").append(it).append('\n') }
+        sb.append("\nLEAD-IN (previous lines, already attributed):\n")
+        if (leadIn.isEmpty()) sb.append("(start of chapter)\n")
+        else leadIn.forEach { sb.append('[').append(it.segmentIndex).append("] (").append(it.speaker).append(") ").append(it.text).append('\n') }
+        sb.append("\nNEW CHUNK — attribute EVERY numbered segment below:\n")
         lines.forEach { sb.append('[').append(it.segmentIndex).append("] ").append(it.text).append('\n') }
         return sb.toString()
     }
@@ -151,21 +162,28 @@ class LlmAttributionClient @Inject constructor(
         const val MAX_TOKENS = 4096
 
         // Cost-efficient defaults; change here to use a different hosted model.
-        const val CLAUDE_MODEL = "claude-3-5-haiku-latest"
+        const val CLAUDE_MODEL = "claude-haiku-4-5"
         const val OPENAI_MODEL = "gpt-4o-mini"
 
         val SYSTEM_PROMPT = """
-            You are a dialogue attribution engine for Japanese web novels.
-            You receive an enumerated transcript; each line is one text segment prefixed with [index].
-            Identify the speaker of every line that contains quoted dialogue (text inside 「」or 『』).
-            Use the surrounding narration segments as context to resolve who is speaking.
-            Respond with ONLY a JSON object of the form:
-            {"attributions":[{"i":<segment index>,"speaker":"<value>"}]}
-            where <value> is the speaking character's name exactly as written in the text, or one of:
-            NARRATOR (the line is narration, not dialogue),
-            UNKNOWN (dialogue whose speaker cannot be determined),
-            GROUP (dialogue spoken by multiple people at once).
-            Only include lines that contain quoted dialogue. Output no prose, no code fences.
+            You attribute speakers in a Japanese web novel, a chunk at a time, in order.
+            You receive the running character roster, a short already-attributed lead-in, and a new
+            chunk of numbered segments. Attribute EVERY numbered segment in the new chunk:
+
+            - Narration (no quotation marks 「」『』, or inner description) -> "NARRATOR".
+            - Dialogue 「…」 whose speaker you can determine from speech tags (e.g. ～と太郎が言った),
+              names, honorifics, turn-taking, or speech style -> the character's name exactly as it
+              appears in the text (Japanese).
+            - Dialogue spoken together by multiple people -> "GROUP".
+            - Dialogue you genuinely cannot attribute -> "UNKNOWN". Prefer UNKNOWN over a wild guess.
+
+            Use the lead-in for turn-taking: in an alternating two-person exchange, speakers usually
+            alternate. Keep names consistent with the roster (same surface form). Do not invent a name
+            from a fragment — only use a name actually present as a speaker.
+
+            Respond with ONLY a JSON object, one entry per segment in the new chunk:
+            {"attributions":[{"i":<segment index>,"speaker":"<name|NARRATOR|UNKNOWN|GROUP>"}]}
+            No prose, no code fences.
         """.trimIndent()
     }
 }

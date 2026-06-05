@@ -53,7 +53,22 @@ enum class Gender { MALE, FEMALE }
 
 object VoiceEngineId {
     const val ANDROID_TTS = "android_tts"
-    const val ELEVEN_LABS = "eleven_labs"
+    const val VOICEVOX = "voicevox"
+    const val OPENAI = "openai"
+    const val GOOGLE = "google"
     const val AZURE = "azure"
+    const val ELEVEN_LABS = "eleven_labs"
     const val OLLAMA = "ollama"
+
+    /** Human-readable label for the engine picker. */
+    fun label(id: String): String = when (id) {
+        ANDROID_TTS -> "Device TTS"
+        VOICEVOX -> "VOICEVOX"
+        OPENAI -> "OpenAI"
+        GOOGLE -> "Google"
+        AZURE -> "Azure"
+        ELEVEN_LABS -> "ElevenLabs"
+        OLLAMA -> "Ollama"
+        else -> id
+    }
 }

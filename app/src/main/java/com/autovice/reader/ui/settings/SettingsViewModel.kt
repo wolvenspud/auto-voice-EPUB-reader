@@ -62,4 +62,8 @@ class SettingsViewModel @Inject constructor(
     fun updateCharacterAttribution(enabled: Boolean) {
         viewModelScope.launch { prefs.updateCharacterAttribution(enabled) }
     }
+
+    fun updateVoicevoxUrl(url: String) {
+        viewModelScope.launch { prefs.updateVoicevoxBaseUrl(url) }
+    }
 }

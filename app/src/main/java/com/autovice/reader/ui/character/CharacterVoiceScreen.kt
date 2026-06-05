@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
@@ -44,9 +45,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedButton
 import com.autovice.reader.domain.model.CharacterTier
 import com.autovice.reader.domain.model.Gender
+import com.autovice.reader.domain.model.VoiceEngineId
 import com.autovice.reader.domain.model.VoiceProfile
+import com.autovice.reader.tts.EngineVoice
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -76,6 +84,21 @@ fun CharacterVoiceScreen(
         }
     }
 
+    // Surface terminal casting outcomes, then reset.
+    LaunchedEffect(uiState.casting) {
+        when (val c = uiState.casting) {
+            is CastingUiState.Done -> {
+                snackbarHost.showSnackbar("Cast ${c.applied} character voice(s) with VOICEVOX")
+                viewModel.dismissCastingStatus()
+            }
+            is CastingUiState.Error -> {
+                snackbarHost.showSnackbar(c.message)
+                viewModel.dismissCastingStatus()
+            }
+            else -> {}
+        }
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
@@ -87,15 +110,26 @@ fun CharacterVoiceScreen(
                     }
                 },
                 actions = {
-                    val running = uiState.attribution is AttributionUiState.Running
+                    val attributing = uiState.attribution is AttributionUiState.Running
                     IconButton(
                         onClick = { viewModel.runAttribution() },
-                        enabled = uiState.aiAvailable && !running,
+                        enabled = uiState.aiAvailable && !attributing,
                     ) {
-                        if (running) {
+                        if (attributing) {
                             CircularProgressIndicator(modifier = Modifier.padding(4.dp))
                         } else {
                             Icon(Icons.Default.AutoAwesome, contentDescription = "AI speaker attribution")
+                        }
+                    }
+                    val casting = uiState.casting is CastingUiState.Running
+                    IconButton(
+                        onClick = { viewModel.autoCast() },
+                        enabled = uiState.castAvailable && !casting,
+                    ) {
+                        if (casting) {
+                            CircularProgressIndicator(modifier = Modifier.padding(4.dp))
+                        } else {
+                            Icon(Icons.Default.AutoFixHigh, contentDescription = "Auto-cast VOICEVOX voices")
                         }
                     }
                 }
@@ -125,7 +159,11 @@ fun CharacterVoiceScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(uiState.profiles, key = { it.profileId }) { profile ->
-                    CharacterCard(profile = profile, onClick = { editing = profile })
+                    CharacterCard(
+                        profile = profile,
+                        voiceLabel = voiceLabelFor(profile, uiState.voiceCatalog),
+                        onClick = { editing = profile },
+                    )
                 }
             }
         }
@@ -138,6 +176,7 @@ fun CharacterVoiceScreen(
         ) {
             VoiceEditor(
                 profile = profile,
+                voiceCatalog = uiState.voiceCatalog,
                 onSave = { updated ->
                     viewModel.saveProfile(updated)
                     scope.launch { editorSheetState.hide() }.invokeOnCompletion { editing = null }
@@ -150,8 +189,18 @@ fun CharacterVoiceScreen(
     }
 }
 
+/** The human-readable voice a profile is bound to (VOICEVOX style label, or device-TTS pitch). */
+private fun voiceLabelFor(profile: VoiceProfile, catalog: List<EngineVoice>): String =
+    when (profile.voiceEngineId) {
+        VoiceEngineId.VOICEVOX -> {
+            val match = catalog.firstOrNull { it.id == profile.externalVoiceId }
+            "VOICEVOX · " + (match?.label ?: profile.externalVoiceId?.let { "id $it" } ?: "default")
+        }
+        else -> "Device TTS · pitch ${String.format("%.2f", profile.pitch)}"
+    }
+
 @Composable
-private fun CharacterCard(profile: VoiceProfile, onClick: () -> Unit) {
+private fun CharacterCard(profile: VoiceProfile, voiceLabel: String, onClick: () -> Unit) {
     ElevatedCard(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
     ) {
@@ -171,10 +220,16 @@ private fun CharacterCard(profile: VoiceProfile, onClick: () -> Unit) {
                     text = buildString {
                         append(tierLabel(profile.tier))
                         if (profile.appearanceCount > 0) append(" · ${profile.appearanceCount} lines")
-                        append(" · pitch ${String.format("%.2f", profile.pitch)}")
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = voiceLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             profile.estimatedGender?.let {
@@ -188,14 +243,18 @@ private fun CharacterCard(profile: VoiceProfile, onClick: () -> Unit) {
 @Composable
 private fun VoiceEditor(
     profile: VoiceProfile,
+    voiceCatalog: List<EngineVoice>,
     onSave: (VoiceProfile) -> Unit,
     onCancel: () -> Unit,
 ) {
+    var engineId by remember(profile.profileId) { mutableStateOf(profile.voiceEngineId) }
+    var voiceId by remember(profile.profileId) { mutableStateOf(profile.externalVoiceId) }
     var pitch by remember(profile.profileId) { mutableFloatStateOf(profile.pitch) }
     var speed by remember(profile.profileId) { mutableFloatStateOf(profile.synthesisSpeed) }
     var gender by remember(profile.profileId) { mutableStateOf(profile.estimatedGender) }
     var tier by remember(profile.profileId) { mutableStateOf(profile.tier) }
     val editable = profile.tier != CharacterTier.SYSTEM
+    val voicevoxAvailable = voiceCatalog.isNotEmpty()
 
     Column(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 32.dp),
@@ -203,22 +262,42 @@ private fun VoiceEditor(
     ) {
         Text(profile.characterName, style = MaterialTheme.typography.headlineSmall)
 
-        EditorSlider(
-            label = "Pitch",
-            value = pitch,
-            valueLabel = String.format("%.2f", pitch),
-            valueRange = 0.5f..2.0f,
-            steps = 14,
-            onValueChange = { pitch = it },
-        )
-        EditorSlider(
-            label = "Synthesis speed",
-            value = speed,
-            valueLabel = String.format("%.2f×", speed),
-            valueRange = 0.5f..2.0f,
-            steps = 14,
-            onValueChange = { speed = it },
-        )
+        // Engine
+        Text("Engine", style = MaterialTheme.typography.labelLarge)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = engineId != VoiceEngineId.VOICEVOX,
+                onClick = { engineId = VoiceEngineId.ANDROID_TTS },
+                label = { Text("Device TTS") },
+            )
+            FilterChip(
+                selected = engineId == VoiceEngineId.VOICEVOX,
+                onClick = { engineId = VoiceEngineId.VOICEVOX },
+                enabled = voicevoxAvailable,
+                label = { Text("VOICEVOX") },
+            )
+        }
+
+        if (engineId == VoiceEngineId.VOICEVOX) {
+            VoicePicker(catalog = voiceCatalog, selectedId = voiceId, onSelect = { voiceId = it })
+        } else {
+            EditorSlider(
+                label = "Pitch",
+                value = pitch,
+                valueLabel = String.format("%.2f", pitch),
+                valueRange = 0.5f..2.0f,
+                steps = 14,
+                onValueChange = { pitch = it },
+            )
+            EditorSlider(
+                label = "Synthesis speed",
+                value = speed,
+                valueLabel = String.format("%.2f×", speed),
+                valueRange = 0.5f..2.0f,
+                steps = 14,
+                onValueChange = { speed = it },
+            )
+        }
 
         if (editable) {
             Text("Gender", style = MaterialTheme.typography.labelLarge)
@@ -255,6 +334,8 @@ private fun VoiceEditor(
             TextButton(onClick = {
                 onSave(
                     profile.copy(
+                        voiceEngineId = engineId,
+                        externalVoiceId = if (engineId == VoiceEngineId.VOICEVOX) voiceId else null,
                         pitch = pitch,
                         synthesisSpeed = speed,
                         estimatedGender = gender,
@@ -262,6 +343,33 @@ private fun VoiceEditor(
                     )
                 )
             }) { Text("Save") }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VoicePicker(catalog: List<EngineVoice>, selectedId: String?, onSelect: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedLabel = catalog.firstOrNull { it.id == selectedId }?.label ?: "Choose a voice"
+    Column {
+        Text("Voice", style = MaterialTheme.typography.labelLarge)
+        Box {
+            OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(selectedLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                modifier = Modifier.heightIn(max = 360.dp),
+            ) {
+                catalog.forEach { v ->
+                    DropdownMenuItem(
+                        text = { Text(v.label) },
+                        onClick = { onSelect(v.id); expanded = false },
+                    )
+                }
+            }
         }
     }
 }

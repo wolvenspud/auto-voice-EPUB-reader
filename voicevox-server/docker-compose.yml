@@ -1,0 +1,19 @@
+# Persistent VOICEVOX engine for the AutoVoice Reader app.
+# The phone (on the same LAN) synthesises against this server over HTTP.
+#
+#   cd voicevox-server && docker compose up -d
+#
+# It listens on 0.0.0.0:50021, so any device on your network can reach it at
+#   http://<this-PC's-LAN-IP>:50021      (currently http://192.168.0.161:50021)
+# Set that URL in the app: Settings -> VOICEVOX -> Engine URL.
+#
+# GPU users can swap the image tag for nvidia-latest and add a deploy/gpus block.
+services:
+  voicevox:
+    image: voicevox/voicevox_engine:cpu-latest
+    container_name: voicevox
+    ports:
+      - "50021:50021"
+    restart: unless-stopped
+    # Bind to all interfaces so phones on the LAN can connect.
+    command: ["--host", "0.0.0.0", "--port", "50021"]

@@ -52,24 +52,29 @@ class AttributionWorker @AssistedInject constructor(
             if (segments.isEmpty()) return@withContext Result.success()
 
             val bookIdShort = VoiceProfileIds.shortBookId(bookId)
-            val knownCharacters = voiceRepository.getVoicesForBook(bookId)
-                .filter { it.tier == CharacterTier.MAJOR || it.tier == CharacterTier.MINOR }
-                .map { it.characterName }
-                .distinct()
+            // Rolling character roster, seeded from any existing character profiles.
+            val roster = LinkedHashSet(
+                voiceRepository.getVoicesForBook(bookId)
+                    .filter { it.tier == CharacterTier.MAJOR || it.tier == CharacterTier.MINOR }
+                    .map { it.characterName },
+            )
 
             val segmentByIndex = segments.associateBy { it.segmentIndex }
             val chunks = chunkLines(segments)
             val newCharacterCounts = HashMap<String, Int>()
             var applied = 0
+            var leadIn = emptyList<LlmAttributionClient.LeadInLine>()
 
             chunks.forEachIndexed { chunkIdx, chunk ->
                 setProgressAsync(workDataOf(KEY_PROGRESS to (chunkIdx.toFloat() / chunks.size)))
-                val results = client.attribute(config.provider, config.activeKey, chunk, knownCharacters)
+                val results = client.attribute(config.provider, config.activeKey, chunk, roster.toList(), leadIn)
+                val speakerByIndex = results.associate { it.segmentIndex to it.speaker }
                 results.forEach { result ->
                     val segment = segmentByIndex[result.segmentIndex] ?: return@forEach
                     val (tag, profileId) = resolveSpeaker(bookIdShort, result.speaker)
                     if (tag is SpeakerTag.Character) {
                         newCharacterCounts[tag.name] = (newCharacterCounts[tag.name] ?: 0) + 1
+                        roster.add(tag.name)
                     }
                     segmentRepository.updateAttribution(
                         spanId = segment.spanId,
@@ -79,6 +84,12 @@ class AttributionWorker @AssistedInject constructor(
                         confidence = 0.8f,
                     )
                     applied++
+                }
+                // Carry the last few attributed lines forward so turn-taking stays coherent.
+                leadIn = chunk.takeLast(LEAD_IN).mapNotNull { line ->
+                    speakerByIndex[line.segmentIndex]?.let {
+                        LlmAttributionClient.LeadInLine(line.segmentIndex, line.text, it)
+                    }
                 }
             }
 
@@ -136,5 +147,6 @@ class AttributionWorker @AssistedInject constructor(
         const val KEY_ERROR = "error"
 
         private const val CHUNK_CHAR_BUDGET = 6000
+        private const val LEAD_IN = 4
     }
 }

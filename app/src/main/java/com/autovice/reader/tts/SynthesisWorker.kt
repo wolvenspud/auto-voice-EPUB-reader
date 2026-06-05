@@ -9,7 +9,9 @@ import com.autovice.audio.WavProcessor
 import com.autovice.reader.data.repository.CharacterVoiceRepository
 import com.autovice.reader.data.repository.SegmentRepository
 import com.autovice.reader.domain.model.AttributionSource
+import com.autovice.reader.domain.model.VoiceEngineId
 import com.autovice.reader.domain.model.VoiceProfile
+import com.autovice.reader.domain.model.VoiceProfileIds
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
@@ -22,7 +24,7 @@ class SynthesisWorker @AssistedInject constructor(
     @Assisted workerParams: WorkerParameters,
     private val segmentRepository: SegmentRepository,
     private val voiceRepository: CharacterVoiceRepository,
-    private val voiceEngine: VoiceEngine,
+    private val engineRegistry: VoiceEngineRegistry,
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
@@ -30,17 +32,27 @@ class SynthesisWorker @AssistedInject constructor(
         val chapterIndex = inputData.getInt(KEY_CHAPTER_INDEX, -1)
         if (chapterIndex < 0) return@withContext Result.failure()
 
+        val usedEngineIds = mutableSetOf(VoiceEngineId.ANDROID_TTS)
         try {
-            val engineReady = withContext(Dispatchers.Main) { voiceEngine.initialise() }
-            if (!engineReady) return@withContext Result.failure(
-                workDataOf(KEY_ERROR to "TTS engine failed to initialise")
-            )
-
             val segments = segmentRepository.getChapterSegments(bookId, chapterIndex)
             if (segments.isEmpty()) return@withContext Result.success()
 
             val profiles = voiceRepository.getVoicesForBook(bookId)
             val profileMap = profiles.associateBy { it.profileId }
+            val bookIdShort = VoiceProfileIds.shortBookId(bookId)
+            val narratorProfile = profileMap[VoiceProfileIds.narrator(bookIdShort)] ?: defaultProfile()
+
+            // Initialise every engine the chapter's profiles reference (plus the always-present
+            // device-TTS fallback). Each engine self-manages its threading inside initialise().
+            usedEngineIds += profileMap.values.map { it.voiceEngineId }
+            val readyEngineIds = mutableSetOf<String>()
+            for (engineId in usedEngineIds) {
+                if (engineRegistry.engineFor(engineId).initialise()) readyEngineIds.add(engineId)
+                else android.util.Log.w("SynthesisWorker", "Engine '$engineId' failed to initialise")
+            }
+            if (VoiceEngineId.ANDROID_TTS !in readyEngineIds) return@withContext Result.failure(
+                workDataOf(KEY_ERROR to "TTS engine failed to initialise")
+            )
 
             val processedDir = File(context.filesDir, "epubs/$bookId/processed").also { it.mkdirs() }
             val tempDir = File(processedDir, "tmp_synth").also { it.mkdirs() }
@@ -76,14 +88,18 @@ class SynthesisWorker @AssistedInject constructor(
                 }
 
                 // Only use character voices when attribution has been verified by the LLM;
-                // heuristic attribution frequently produces garbage speaker names.
+                // heuristic attribution frequently produces garbage speaker names. Either way the
+                // narrator *profile* (not a hard-coded default) is used so its engine/voice applies.
                 val profile = when (segment.attributionSource) {
                     AttributionSource.LLM, AttributionSource.USER ->
-                        profileMap[segment.voiceProfileId] ?: defaultProfile()
-                    else -> defaultProfile()
+                        profileMap[segment.voiceProfileId] ?: narratorProfile
+                    else -> narratorProfile
                 }
+                // Dispatch to the profile's engine, falling back to device TTS if it didn't init.
+                val engineId = profile.voiceEngineId.takeIf { it in readyEngineIds } ?: VoiceEngineId.ANDROID_TTS
+                val engine = engineRegistry.engineFor(engineId)
                 val tempWav = File(tempDir, "seg_${segment.segmentIndex}.wav")
-                val duration = voiceEngine.synthesiseToFile(segment.rawText, profile, tempWav)
+                val duration = engine.synthesiseToFile(segment.rawText, profile, tempWav)
                 if (duration < 0 || !tempWav.exists()) return@forEachIndexed
 
                 val rawWavBytes = tempWav.readBytes()
@@ -156,7 +172,7 @@ class SynthesisWorker @AssistedInject constructor(
             android.util.Log.e("SynthesisWorker", "Synthesis failed", e)
             Result.failure(workDataOf(KEY_ERROR to (e.message ?: "Synthesis failed")))
         } finally {
-            voiceEngine.release()
+            usedEngineIds.forEach { runCatching { engineRegistry.engineFor(it).release() } }
         }
     }
 

@@ -1,8 +1,12 @@
 # Gradle
 .gradle/
+.kotlin/
 build/
 **/build/
 local.properties
+
+# But keep the distributed APK (lives under dist/, not build/)
+!dist/*.apk
 
 # Android Studio
 .idea/

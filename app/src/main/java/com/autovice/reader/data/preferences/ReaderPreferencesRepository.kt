@@ -29,6 +29,7 @@ class ReaderPreferencesRepository @Inject constructor(
             autoScrollEnabled = prefs[Keys.AUTO_SCROLL_ENABLED] ?: true,
             autoScrollResumeDelaySecs = prefs[Keys.AUTO_SCROLL_RESUME_DELAY] ?: 4,
             characterAttributionEnabled = prefs[Keys.CHARACTER_ATTRIBUTION_ENABLED] ?: false,
+            voicevoxBaseUrl = prefs[Keys.VOICEVOX_BASE_URL] ?: "http://192.168.0.161:50021",
             synthesisWindowChars = prefs[Keys.SYNTHESIS_WINDOW_CHARS] ?: 80_000,
             synthesisEvictionTrailChars = prefs[Keys.SYNTHESIS_EVICTION_TRAIL_CHARS] ?: 10_000,
         )
@@ -58,6 +59,9 @@ class ReaderPreferencesRepository @Inject constructor(
     suspend fun updateCharacterAttribution(enabled: Boolean) =
         context.dataStore.edit { it[Keys.CHARACTER_ATTRIBUTION_ENABLED] = enabled }
 
+    suspend fun updateVoicevoxBaseUrl(url: String) =
+        context.dataStore.edit { it[Keys.VOICEVOX_BASE_URL] = url.trim() }
+
     suspend fun updateSynthesisWindowChars(chars: Int) =
         context.dataStore.edit { it[Keys.SYNTHESIS_WINDOW_CHARS] = chars }
 
@@ -70,6 +74,7 @@ class ReaderPreferencesRepository @Inject constructor(
         val AUTO_SCROLL_ENABLED = booleanPreferencesKey("auto_scroll_enabled")
         val AUTO_SCROLL_RESUME_DELAY = intPreferencesKey("auto_scroll_resume_delay_secs")
         val CHARACTER_ATTRIBUTION_ENABLED = booleanPreferencesKey("character_attribution_enabled")
+        val VOICEVOX_BASE_URL = stringPreferencesKey("voicevox_base_url")
         val SYNTHESIS_WINDOW_CHARS = intPreferencesKey("synthesis_window_chars")
         val SYNTHESIS_EVICTION_TRAIL_CHARS = intPreferencesKey("synthesis_eviction_trail_chars")
     }
