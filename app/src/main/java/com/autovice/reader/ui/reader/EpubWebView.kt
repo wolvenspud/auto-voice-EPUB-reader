@@ -32,7 +32,10 @@ fun EpubWebView(
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var pageLoaded by remember { mutableStateOf(false) }
 
-    // Apply theme colours / typography to the page via the CSS variables the HTML defines.
+    // Apply theme colours / typography to the page. Processed chapters consume the CSS variables,
+    // but internal links can reach chapter files that weren't rewritten and so lack our stylesheet —
+    // for those, the variables alone do nothing and the page renders default black text over the
+    // dark WebView background. So we also inject a forced colour rule that themes *any* page.
     LaunchedEffect(pageLoaded, bgHex, textHex, fontSize, lineHeight) {
         if (pageLoaded) {
             webViewRef?.let { wv ->
@@ -45,6 +48,16 @@ fun EpubWebView(
                       s.setProperty('--text-color', '$textHex');
                       s.setProperty('--font-size', '${fontSize}px');
                       s.setProperty('--line-height', '$lineHeight');
+                      var st = document.getElementById('av-forced-theme');
+                      if (!st) {
+                        st = document.createElement('style');
+                        st.id = 'av-forced-theme';
+                        (document.head || document.documentElement).appendChild(st);
+                      }
+                      st.textContent =
+                        'html{background-color:$bgHex;}' +
+                        'body{background-color:$bgHex !important;color:$textHex !important;}' +
+                        'p,div,span,li,td,th,h1,h2,h3,h4,h5,h6,blockquote{color:$textHex !important;}';
                     })();
                     """.trimIndent(),
                     null,

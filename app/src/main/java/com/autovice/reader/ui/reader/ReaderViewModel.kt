@@ -79,6 +79,10 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun loadBook(bookId: String) {
+        // Idempotent: re-entering the reader (e.g. returning from Settings or Character voices)
+        // re-runs this LaunchedEffect, but the ViewModel survives — so don't reset back to the
+        // saved chapter and clobber where the reader currently is.
+        if (_uiState.value.book?.id == bookId) return
         viewModelScope.launch {
             val book = libraryRepository.getBook(bookId)
             if (book == null) {

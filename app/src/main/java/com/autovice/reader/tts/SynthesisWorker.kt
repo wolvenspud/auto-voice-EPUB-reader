@@ -6,6 +6,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.autovice.audio.WavProcessor
+import com.autovice.reader.data.preferences.ReaderPreferencesRepository
 import com.autovice.reader.data.repository.CharacterVoiceRepository
 import com.autovice.reader.data.repository.SegmentRepository
 import com.autovice.reader.domain.model.AttributionSource
@@ -15,6 +16,7 @@ import com.autovice.reader.domain.model.VoiceProfileIds
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -25,6 +27,7 @@ class SynthesisWorker @AssistedInject constructor(
     private val segmentRepository: SegmentRepository,
     private val voiceRepository: CharacterVoiceRepository,
     private val engineRegistry: VoiceEngineRegistry,
+    private val preferencesRepository: ReaderPreferencesRepository,
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
@@ -41,6 +44,9 @@ class SynthesisWorker @AssistedInject constructor(
             val profileMap = profiles.associateBy { it.profileId }
             val bookIdShort = VoiceProfileIds.shortBookId(bookId)
             val narratorProfile = profileMap[VoiceProfileIds.narrator(bookIdShort)] ?: defaultProfile()
+            // Master switch: when character attribution is off, everything reads in the narrator
+            // voice (typically device TTS), so synthesis ignores per-character assignments entirely.
+            val attributionEnabled = preferencesRepository.preferences.first().characterAttributionEnabled
 
             // Initialise every engine the chapter's profiles reference (plus the always-present
             // device-TTS fallback). Each engine self-manages its threading inside initialise().
@@ -87,11 +93,13 @@ class SynthesisWorker @AssistedInject constructor(
                     }
                 }
 
-                // Only use character voices when attribution has been verified by the LLM;
-                // heuristic attribution frequently produces garbage speaker names. Either way the
+                // Only use character voices when attribution is enabled AND has been verified by the
+                // LLM (heuristic attribution frequently produces garbage speaker names). Otherwise the
                 // narrator *profile* (not a hard-coded default) is used so its engine/voice applies.
-                val profile = when (segment.attributionSource) {
-                    AttributionSource.LLM, AttributionSource.USER ->
+                val profile = when {
+                    !attributionEnabled -> narratorProfile
+                    segment.attributionSource == AttributionSource.LLM ||
+                        segment.attributionSource == AttributionSource.USER ->
                         profileMap[segment.voiceProfileId] ?: narratorProfile
                     else -> narratorProfile
                 }

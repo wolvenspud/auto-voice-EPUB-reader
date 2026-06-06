@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
@@ -99,6 +100,21 @@ fun CharacterVoiceScreen(
         }
     }
 
+    // Surface terminal refresh-audio outcomes, then reset.
+    LaunchedEffect(uiState.refresh) {
+        when (val r = uiState.refresh) {
+            is RefreshUiState.Done -> {
+                snackbarHost.showSnackbar("Audio refreshed for this chapter")
+                viewModel.dismissRefreshStatus()
+            }
+            is RefreshUiState.Error -> {
+                snackbarHost.showSnackbar("Refresh failed: ${r.message}")
+                viewModel.dismissRefreshStatus()
+            }
+            else -> {}
+        }
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
@@ -132,6 +148,17 @@ fun CharacterVoiceScreen(
                             Icon(Icons.Default.AutoFixHigh, contentDescription = "Auto-cast VOICEVOX voices")
                         }
                     }
+                    val refreshing = uiState.refresh is RefreshUiState.Running
+                    IconButton(
+                        onClick = { viewModel.refreshAudio() },
+                        enabled = !refreshing,
+                    ) {
+                        if (refreshing) {
+                            CircularProgressIndicator(modifier = Modifier.padding(4.dp))
+                        } else {
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh audio from current settings")
+                        }
+                    }
                 }
             )
         }
@@ -143,6 +170,21 @@ fun CharacterVoiceScreen(
                     progress = { attr.progress },
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+            val ref = uiState.refresh
+            if (ref is RefreshUiState.Running) {
+                Text(
+                    text = ref.label,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+                val p = ref.progress
+                if (p != null) {
+                    LinearProgressIndicator(progress = { p }, modifier = Modifier.fillMaxWidth())
+                } else {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
             }
             if (!uiState.aiAvailable) {
                 Text(

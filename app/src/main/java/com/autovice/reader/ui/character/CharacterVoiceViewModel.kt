@@ -3,6 +3,7 @@ package com.autovice.reader.ui.character
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
@@ -11,6 +12,7 @@ import com.autovice.reader.data.preferences.ApiKeyStore
 import com.autovice.reader.data.preferences.ReaderPreferencesRepository
 import com.autovice.reader.data.repository.CharacterVoiceRepository
 import com.autovice.reader.data.repository.LibraryRepository
+import com.autovice.reader.data.repository.SegmentRepository
 import com.autovice.reader.domain.model.CharacterTier
 import com.autovice.reader.domain.model.VoiceEngineId
 import com.autovice.reader.domain.model.VoiceProfile
@@ -28,10 +30,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import com.autovice.reader.domain.model.AttributionSource
+import com.autovice.reader.tts.SynthesisWorker
+import java.util.UUID
 import javax.inject.Inject
 
 sealed interface AttributionUiState {
@@ -48,12 +54,21 @@ sealed interface CastingUiState {
     data class Error(val message: String) : CastingUiState
 }
 
+sealed interface RefreshUiState {
+    data object Idle : RefreshUiState
+    /** [progress] is null while attributing (indeterminate) and 0..1 while synthesising. */
+    data class Running(val progress: Float?, val label: String) : RefreshUiState
+    data object Done : RefreshUiState
+    data class Error(val message: String) : RefreshUiState
+}
+
 data class CharacterVoiceUiState(
     val profiles: List<VoiceProfile> = emptyList(),
     val aiAvailable: Boolean = false,
     val castAvailable: Boolean = false,
     val attribution: AttributionUiState = AttributionUiState.Idle,
     val casting: CastingUiState = CastingUiState.Idle,
+    val refresh: RefreshUiState = RefreshUiState.Idle,
     /** VOICEVOX voices for the per-character picker (empty if the engine is unreachable). */
     val voiceCatalog: List<EngineVoice> = emptyList(),
 )
@@ -62,6 +77,7 @@ data class CharacterVoiceUiState(
 class CharacterVoiceViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val voiceRepository: CharacterVoiceRepository,
+    private val segmentRepository: SegmentRepository,
     private val apiKeyStore: ApiKeyStore,
     private val workManager: WorkManager,
     private val libraryRepository: LibraryRepository,
@@ -75,6 +91,7 @@ class CharacterVoiceViewModel @Inject constructor(
 
     private val attribution = MutableStateFlow<AttributionUiState>(AttributionUiState.Idle)
     private val casting = MutableStateFlow<CastingUiState>(CastingUiState.Idle)
+    private val refresh = MutableStateFlow<RefreshUiState>(RefreshUiState.Idle)
     private val voiceCatalog = MutableStateFlow<List<EngineVoice>>(emptyList())
 
     init {
@@ -89,9 +106,9 @@ class CharacterVoiceViewModel @Inject constructor(
             preferencesRepository.preferences,
         ) { profiles, config, prefs -> Triple(profiles, config, prefs) },
         attribution,
-        casting,
+        combine(casting, refresh) { c, r -> c to r },
         voiceCatalog,
-    ) { (profiles, config, prefs), attr, cast, catalog ->
+    ) { (profiles, config, prefs), attr, (cast, ref), catalog ->
         CharacterVoiceUiState(
             // System voices (narrator, …) first, then characters by appearance frequency.
             profiles = profiles.sortedWith(
@@ -102,6 +119,7 @@ class CharacterVoiceViewModel @Inject constructor(
             castAvailable = config.hasActiveKey && catalog.isNotEmpty(),
             attribution = attr,
             casting = cast,
+            refresh = ref,
             voiceCatalog = catalog,
         )
     }.stateIn(
@@ -163,6 +181,87 @@ class CharacterVoiceViewModel @Inject constructor(
     }
 
     fun dismissCastingStatus() { casting.value = CastingUiState.Idle }
+
+    /**
+     * One-tap "make the audio match the current settings". Re-runs LLM attribution only if it
+     * hasn't been done for this chapter yet (attribution just turned on / never run), then
+     * re-synthesises the chapter. Synthesis honours the attribution master switch: full
+     * per-character voices when it's on and attributed, otherwise the narrator voice (device TTS)
+     * for everything.
+     */
+    fun refreshAudio() {
+        if (refresh.value is RefreshUiState.Running) return
+        viewModelScope.launch {
+            try {
+                val prefs = preferencesRepository.preferences.first()
+                val config = apiKeyStore.current()
+                val useLlm = prefs.characterAttributionEnabled && config.hasActiveKey
+
+                val segments = segmentRepository.getChapterSegments(bookId, chapterIndex)
+                if (segments.isEmpty()) {
+                    refresh.value = RefreshUiState.Error("No text in this chapter to synthesise"); return@launch
+                }
+
+                // Attribute only when enabled and not already LLM-attributed — avoids redundant API calls.
+                if (useLlm && segments.none { it.attributionSource == AttributionSource.LLM }) {
+                    refresh.value = RefreshUiState.Running(null, "Attributing speakers…")
+                    if (!awaitAttribution()) {
+                        refresh.value = RefreshUiState.Error("Attribution failed"); return@launch
+                    }
+                }
+
+                refresh.value = RefreshUiState.Running(0f, "Synthesising audio…")
+                val ok = awaitSynthesis()
+                refresh.value = if (ok) RefreshUiState.Done else RefreshUiState.Error("Synthesis failed")
+            } catch (e: Exception) {
+                refresh.value = RefreshUiState.Error(e.message ?: "Refresh failed")
+            }
+        }
+    }
+
+    fun dismissRefreshStatus() { refresh.value = RefreshUiState.Idle }
+
+    /** Enqueues attribution for the chapter and suspends until it finishes; true on success. */
+    private suspend fun awaitAttribution(): Boolean {
+        val request = OneTimeWorkRequestBuilder<AttributionWorker>()
+            .setInputData(
+                workDataOf(
+                    AttributionWorker.KEY_BOOK_ID to bookId,
+                    AttributionWorker.KEY_CHAPTER_INDEX to chapterIndex,
+                )
+            )
+            .build()
+        workManager.enqueue(request)
+        return awaitWorkSuccess(request.id) {}
+    }
+
+    /** Re-synthesises the chapter (replacing any in-flight run) and suspends until done. */
+    private suspend fun awaitSynthesis(): Boolean {
+        val request = OneTimeWorkRequestBuilder<SynthesisWorker>()
+            .setInputData(
+                workDataOf(
+                    SynthesisWorker.KEY_BOOK_ID to bookId,
+                    SynthesisWorker.KEY_CHAPTER_INDEX to chapterIndex,
+                )
+            )
+            .build()
+        workManager.enqueueUniqueWork("synth_${bookId}_$chapterIndex", ExistingWorkPolicy.REPLACE, request)
+        return awaitWorkSuccess(request.id) { p ->
+            refresh.value = RefreshUiState.Running(p, "Synthesising audio…")
+        }
+    }
+
+    /** Suspends until the given work reaches a terminal state, reporting progress; true if SUCCEEDED. */
+    private suspend fun awaitWorkSuccess(id: UUID, onProgress: (Float) -> Unit): Boolean {
+        val terminal = workManager.getWorkInfoByIdFlow(id)
+            .onEach { info ->
+                if (info?.state == WorkInfo.State.RUNNING) {
+                    onProgress(info.progress.getFloat(SynthesisWorker.KEY_PROGRESS, 0f))
+                }
+            }
+            .first { info -> info != null && info.state.isFinished }
+        return terminal?.state == WorkInfo.State.SUCCEEDED
+    }
 
     private fun deleteCachedAudio() {
         val processedDir = File(libraryRepository.generateBookDir(bookId), "processed")
