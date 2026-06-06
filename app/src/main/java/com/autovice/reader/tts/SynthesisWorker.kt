@@ -107,8 +107,21 @@ class SynthesisWorker @AssistedInject constructor(
                 val engineId = profile.voiceEngineId.takeIf { it in readyEngineIds } ?: VoiceEngineId.ANDROID_TTS
                 val engine = engineRegistry.engineFor(engineId)
                 val tempWav = File(tempDir, "seg_${segment.segmentIndex}.wav")
-                val duration = engine.synthesiseToFile(segment.rawText, profile, tempWav)
-                if (duration < 0 || !tempWav.exists()) return@forEachIndexed
+                var duration = engine.synthesiseToFile(segment.rawText, profile, tempWav)
+                // A transient engine failure (e.g. a VOICEVOX network hiccup) must not silently drop
+                // the sentence — that leaves a hole in the audio and desyncs the highlight. Retry on
+                // device TTS so every segment still gets spoken and the timeline stays contiguous.
+                if ((duration < 0 || !tempWav.exists()) && engineId != VoiceEngineId.ANDROID_TTS) {
+                    android.util.Log.w("SynthesisWorker", "Engine '$engineId' failed seg ${segment.segmentIndex}; falling back to device TTS")
+                    duration = engineRegistry.engineFor(VoiceEngineId.ANDROID_TTS)
+                        .synthesiseToFile(segment.rawText, profile, tempWav)
+                }
+                if (duration < 0 || !tempWav.exists()) {
+                    // Even the fallback failed: park a zero-length slot at the current offset so a
+                    // stale timestamp from a previous run can't mis-highlight this segment.
+                    segmentRepository.updateAudioTimestamp(segment.spanId, cumulativeMs, 0)
+                    return@forEachIndexed
+                }
 
                 val rawWavBytes = tempWav.readBytes()
                 val rawInfo = WavProcessor.readInfo(tempWav)
