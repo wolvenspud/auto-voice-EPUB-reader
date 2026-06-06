@@ -12,6 +12,7 @@ import com.autovice.reader.data.preferences.ReaderTheme
 import com.autovice.reader.data.repository.LibraryRepository
 import com.autovice.reader.data.repository.ProgressRepository
 import com.autovice.reader.data.repository.SegmentRepository
+import com.autovice.audio.WavProcessor
 import com.autovice.reader.domain.model.Book
 import com.autovice.reader.domain.model.Chapter
 import com.autovice.reader.tts.SynthesisWorker
@@ -71,6 +72,16 @@ class ReaderViewModel @Inject constructor(
     private var autoScrollResumeJob: Job? = null
     private var synthesisObserveJob: Job? = null
     private var pendingSeekSegment: Int? = null
+
+    /**
+     * AAC-LC encoder priming delay. The MediaCodec AAC encoder prepends 2048 samples of look-ahead
+     * silence to every encoded file, and MediaMuxer doesn't tag it for gapless trimming — so the
+     * decoded audio plays ~85 ms (at 24 kHz) later than the WAV-concatenation timeline our segment
+     * timestamps (audioStartMs) are built on. Without compensating, the highlight leads the audio by
+     * that much — negligible on long narration but glaring on short, rapid dialogue lines. So we
+     * subtract it when mapping a player position to a segment, and add it when seeking to a segment.
+     */
+    private val encoderDelayMs: Long = 2048L * 1000L / WavProcessor.CANONICAL_SAMPLE_RATE
 
     init {
         preferencesRepository.preferences.onEach { p ->
@@ -158,7 +169,7 @@ class ReaderViewModel @Inject constructor(
                 .firstOrNull { it.segmentIndex == segIndex }
             val audioReady = _uiState.value.audioPath?.let { File(it).exists() } == true
             if (audioReady && segment != null && segment.audioStartMs >= 0) {
-                _seekToMs.value = segment.audioStartMs
+                _seekToMs.value = segment.audioStartMs + encoderDelayMs
                 _uiState.update { it.copy(playbackState = PlaybackState.PLAYING) }
             } else {
                 // Audio not ready yet: synthesise, then jump to the tapped sentence on completion.
@@ -264,7 +275,7 @@ class ReaderViewModel @Inject constructor(
                         if (audio.exists() && seekSeg != null) {
                             val seg = segmentRepository.getChapterSegments(book.id, chapterIndex)
                                 .firstOrNull { it.segmentIndex == seekSeg }
-                            if (seg != null && seg.audioStartMs >= 0) _seekToMs.value = seg.audioStartMs
+                            if (seg != null && seg.audioStartMs >= 0) _seekToMs.value = seg.audioStartMs + encoderDelayMs
                         }
                     }
                     WorkInfo.State.FAILED ->
@@ -302,7 +313,10 @@ class ReaderViewModel @Inject constructor(
         val book = _uiState.value.book ?: return
         val chapterIndex = _uiState.value.currentChapter?.index ?: return
         viewModelScope.launch {
-            val segment = segmentRepository.getSegmentAtPosition(book.id, chapterIndex, positionMs) ?: return@launch
+            // Map the player position back onto the WAV-concatenation timeline before looking up
+            // the segment, so the highlight tracks the audio actually being heard (see encoderDelayMs).
+            val contentMs = (positionMs - encoderDelayMs).coerceAtLeast(0)
+            val segment = segmentRepository.getSegmentAtPosition(book.id, chapterIndex, contentMs) ?: return@launch
             val htmlId = "c${segment.chapterIndex}s${segment.segmentIndex}"
             if (htmlId != _uiState.value.highlightedSpanId) {
                 _uiState.update { it.copy(highlightedSpanId = htmlId) }
@@ -318,9 +332,10 @@ class ReaderViewModel @Inject constructor(
             .filter { it.audioStartMs >= 0 }
             .sortedBy { it.audioStartMs }
         if (segments.isEmpty()) return null
-        val currentIdx = segments.indexOfLast { it.audioStartMs <= positionMs }.coerceAtLeast(0)
+        val contentMs = (positionMs - encoderDelayMs).coerceAtLeast(0)
+        val currentIdx = segments.indexOfLast { it.audioStartMs <= contentMs }.coerceAtLeast(0)
         val targetIdx = (currentIdx + delta).coerceIn(segments.indices)
-        return segments[targetIdx].audioStartMs
+        return segments[targetIdx].audioStartMs + encoderDelayMs
     }
 
     fun setHighlightedSpan(spanId: String?) {
