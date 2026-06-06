@@ -7,11 +7,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
@@ -162,8 +164,9 @@ fun CharacterVoiceScreen(
             VoiceEditor(
                 profile = profile,
                 voiceCatalog = uiState.voiceCatalog,
+                onPreview = { voiceId -> viewModel.previewVoice(voiceId) },
                 onSave = { updated ->
-                    viewModel.saveProfile(updated)
+                    viewModel.saveProfileAndRecompile(updated)
                     scope.launch { editorSheetState.hide() }.invokeOnCompletion { editing = null }
                 },
                 onCancel = {
@@ -229,6 +232,7 @@ private fun CharacterCard(profile: VoiceProfile, voiceLabel: String, onClick: ()
 private fun VoiceEditor(
     profile: VoiceProfile,
     voiceCatalog: List<EngineVoice>,
+    onPreview: (String) -> Unit,
     onSave: (VoiceProfile) -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -264,7 +268,12 @@ private fun VoiceEditor(
         }
 
         if (engineId == VoiceEngineId.VOICEVOX) {
-            VoicePicker(catalog = voiceCatalog, selectedId = voiceId, onSelect = { voiceId = it })
+            VoicePicker(
+                catalog = voiceCatalog,
+                selectedId = voiceId,
+                onSelect = { voiceId = it },
+                onPreview = onPreview,
+            )
         } else {
             EditorSlider(
                 label = "Pitch",
@@ -327,33 +336,49 @@ private fun VoiceEditor(
                         tier = tier,
                     )
                 )
-            }) { Text("Save") }
+            }) { Text("Save & recompile") }
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun VoicePicker(catalog: List<EngineVoice>, selectedId: String?, onSelect: (String) -> Unit) {
+private fun VoicePicker(
+    catalog: List<EngineVoice>,
+    selectedId: String?,
+    onSelect: (String) -> Unit,
+    onPreview: (String) -> Unit,
+) {
     var expanded by remember { mutableStateOf(false) }
     val selectedLabel = catalog.firstOrNull { it.id == selectedId }?.label ?: "Choose a voice"
     Column {
         Text("Voice", style = MaterialTheme.typography.labelLarge)
-        Box {
-            OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
-                Text(selectedLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            DropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false },
-                modifier = Modifier.heightIn(max = 360.dp),
-            ) {
-                catalog.forEach { v ->
-                    DropdownMenuItem(
-                        text = { Text(v.label) },
-                        onClick = { onSelect(v.id); expanded = false },
-                    )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.weight(1f)) {
+                OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text(selectedLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
+                DropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false },
+                    modifier = Modifier.heightIn(max = 360.dp),
+                ) {
+                    catalog.forEach { v ->
+                        DropdownMenuItem(
+                            text = { Text(v.label) },
+                            trailingIcon = {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                            },
+                            // Tap selects AND auditions the voice; the menu stays open so several can
+                            // be compared. Dismiss by tapping outside.
+                            onClick = { onSelect(v.id); onPreview(v.id) },
+                        )
+                    }
+                }
+            }
+            // Replay the currently-selected voice.
+            IconButton(onClick = { selectedId?.let(onPreview) }, enabled = selectedId != null) {
+                Icon(Icons.Default.PlayArrow, contentDescription = "Preview selected voice")
             }
         }
     }

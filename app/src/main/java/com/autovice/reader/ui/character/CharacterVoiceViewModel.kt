@@ -26,6 +26,7 @@ import com.autovice.reader.tts.VoiceEngineRegistry
 import com.autovice.reader.work.AttributionWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -79,6 +80,9 @@ class CharacterVoiceViewModel @Inject constructor(
     private val refresh = MutableStateFlow<RefreshUiState>(RefreshUiState.Idle)
     private val voiceCatalog = MutableStateFlow<List<EngineVoice>>(emptyList())
 
+    private var previewJob: Job? = null
+    private var previewPlayer: android.media.MediaPlayer? = null
+
     init {
         // Load the VOICEVOX catalog for the per-character picker.
         viewModelScope.launch { voiceCatalog.value = loadCatalog() }
@@ -112,12 +116,60 @@ class CharacterVoiceViewModel @Inject constructor(
     private suspend fun loadCatalog(): List<EngineVoice> =
         runCatching { engineRegistry.engineFor(VoiceEngineId.VOICEVOX).listVoices() }.getOrDefault(emptyList())
 
-    /** Persists an edited profile, flags its segments for re-synthesis, and deletes cached audio. */
-    fun saveProfile(profile: VoiceProfile) {
+    /**
+     * Saves an edited profile, then re-synthesises the chapter so the new voice is audible right
+     * away — no separate attribution/casting pass (the user's manual choice is the source of truth).
+     */
+    fun saveProfileAndRecompile(profile: VoiceProfile) {
+        if (refresh.value is RefreshUiState.Running) return
         viewModelScope.launch {
-            voiceRepository.updateProfileAndInvalidate(bookId, profile)
-            withContext(Dispatchers.IO) { deleteCachedAudio() }
+            try {
+                voiceRepository.updateProfileAndInvalidate(bookId, profile)
+                withContext(Dispatchers.IO) { deleteCachedAudio() }
+                refresh.value = RefreshUiState.Running(0f, "Recompiling audio…")
+                val ok = awaitSynthesis()
+                refresh.value = if (ok) RefreshUiState.Done("Voice saved — audio recompiled") else
+                    RefreshUiState.Error("Synthesis failed")
+            } catch (e: Exception) {
+                refresh.value = RefreshUiState.Error(e.message ?: "Recompile failed")
+            }
         }
+    }
+
+    /** Synthesises a short sample with [voiceId] (VOICEVOX) and plays it, so the user can audition. */
+    fun previewVoice(voiceId: String) {
+        previewJob?.cancel()
+        previewJob = viewModelScope.launch {
+            try {
+                val out = File(libraryRepository.generateBookDir(bookId), "voice_preview.wav")
+                val sample = VoiceProfile(
+                    profileId = "preview",
+                    characterName = "preview",
+                    tier = CharacterTier.SYSTEM,
+                    voiceEngineId = VoiceEngineId.VOICEVOX,
+                    externalVoiceId = voiceId,
+                )
+                val duration = withContext(Dispatchers.IO) {
+                    engineRegistry.engineFor(VoiceEngineId.VOICEVOX).synthesiseToFile(PREVIEW_TEXT, sample, out)
+                }
+                if (duration < 0 || !out.exists()) return@launch
+                previewPlayer?.release()
+                previewPlayer = android.media.MediaPlayer().apply {
+                    setDataSource(out.absolutePath)
+                    setOnCompletionListener { mp -> mp.release(); if (previewPlayer === mp) previewPlayer = null }
+                    prepare()
+                    start()
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("CharacterVoice", "Voice preview failed: ${e.message}")
+            }
+        }
+    }
+
+    override fun onCleared() {
+        previewJob?.cancel()
+        previewPlayer?.release()
+        previewPlayer = null
     }
 
     /**
@@ -269,5 +321,10 @@ class CharacterVoiceViewModel @Inject constructor(
     private fun deleteCachedAudio() {
         val processedDir = File(libraryRepository.generateBookDir(bookId), "processed")
         processedDir.listFiles()?.filter { it.extension == "aac" }?.forEach { it.delete() }
+    }
+
+    private companion object {
+        /** Short sample line spoken when auditioning a voice. */
+        const val PREVIEW_TEXT = "こんにちは。これはこの声のサンプルです。"
     }
 }
