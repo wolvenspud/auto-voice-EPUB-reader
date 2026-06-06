@@ -24,3 +24,5 @@ google-services.json
 
 # Generated
 app/schemas/
+.claude/scheduled_tasks.lock
+.claude/*.lock

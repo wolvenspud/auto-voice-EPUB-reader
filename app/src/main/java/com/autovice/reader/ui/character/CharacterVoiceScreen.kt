@@ -12,8 +12,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.AutoFixHigh
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
@@ -70,41 +68,11 @@ fun CharacterVoiceScreen(
     val editorSheetState = rememberModalBottomSheetState()
     val scope = rememberCoroutineScope()
 
-    // Surface terminal attribution outcomes, then reset.
-    LaunchedEffect(uiState.attribution) {
-        when (val a = uiState.attribution) {
-            is AttributionUiState.Done -> {
-                snackbarHost.showSnackbar("AI attribution complete — ${a.applied} lines updated")
-                viewModel.dismissAttributionStatus()
-            }
-            is AttributionUiState.Error -> {
-                snackbarHost.showSnackbar("Attribution failed: ${a.message}")
-                viewModel.dismissAttributionStatus()
-            }
-            else -> {}
-        }
-    }
-
-    // Surface terminal casting outcomes, then reset.
-    LaunchedEffect(uiState.casting) {
-        when (val c = uiState.casting) {
-            is CastingUiState.Done -> {
-                snackbarHost.showSnackbar("Cast ${c.applied} character voice(s) with VOICEVOX")
-                viewModel.dismissCastingStatus()
-            }
-            is CastingUiState.Error -> {
-                snackbarHost.showSnackbar(c.message)
-                viewModel.dismissCastingStatus()
-            }
-            else -> {}
-        }
-    }
-
     // Surface terminal refresh-audio outcomes, then reset.
     LaunchedEffect(uiState.refresh) {
         when (val r = uiState.refresh) {
             is RefreshUiState.Done -> {
-                snackbarHost.showSnackbar("Audio refreshed for this chapter")
+                snackbarHost.showSnackbar(r.message)
                 viewModel.dismissRefreshStatus()
             }
             is RefreshUiState.Error -> {
@@ -126,28 +94,7 @@ fun CharacterVoiceScreen(
                     }
                 },
                 actions = {
-                    val attributing = uiState.attribution is AttributionUiState.Running
-                    IconButton(
-                        onClick = { viewModel.runAttribution() },
-                        enabled = uiState.aiAvailable && !attributing,
-                    ) {
-                        if (attributing) {
-                            CircularProgressIndicator(modifier = Modifier.padding(4.dp))
-                        } else {
-                            Icon(Icons.Default.AutoAwesome, contentDescription = "AI speaker attribution")
-                        }
-                    }
-                    val casting = uiState.casting is CastingUiState.Running
-                    IconButton(
-                        onClick = { viewModel.autoCast() },
-                        enabled = uiState.castAvailable && !casting,
-                    ) {
-                        if (casting) {
-                            CircularProgressIndicator(modifier = Modifier.padding(4.dp))
-                        } else {
-                            Icon(Icons.Default.AutoFixHigh, contentDescription = "Auto-cast VOICEVOX voices")
-                        }
-                    }
+                    // One action: identify speakers, cast their voices, and re-synthesise.
                     val refreshing = uiState.refresh is RefreshUiState.Running
                     IconButton(
                         onClick = { viewModel.refreshAudio() },
@@ -156,7 +103,7 @@ fun CharacterVoiceScreen(
                         if (refreshing) {
                             CircularProgressIndicator(modifier = Modifier.padding(4.dp))
                         } else {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh audio from current settings")
+                            Icon(Icons.Default.AutoAwesome, contentDescription = "Generate & refresh audio")
                         }
                     }
                 }
@@ -164,13 +111,6 @@ fun CharacterVoiceScreen(
         }
     ) { innerPadding ->
         Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-            val attr = uiState.attribution
-            if (attr is AttributionUiState.Running) {
-                LinearProgressIndicator(
-                    progress = { attr.progress },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
             val ref = uiState.refresh
             if (ref is RefreshUiState.Running) {
                 Text(
@@ -186,14 +126,17 @@ fun CharacterVoiceScreen(
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
             }
-            if (!uiState.aiAvailable) {
-                Text(
-                    text = "Enable character attribution and add an API key in Settings to use AI speaker attribution.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                )
-            }
+            Text(
+                text = if (uiState.aiAvailable) {
+                    "Tap ✨ to identify speakers, assign their voices, and generate the audio."
+                } else {
+                    "Turn on character attribution and add an API key in Settings for per-character " +
+                        "voices. Tap ✨ to generate audio in the narrator voice meanwhile."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
