@@ -43,6 +43,35 @@ the app: **Settings → VOICEVOX → Engine URL** (`http://<your-PC-LAN-IP>:5002
 - The phone and PC must be on the same network.
 - An emulator on the build machine instead uses `http://10.0.2.2:50021` (host loopback).
 
+## Use it from outside your home (Tailscale)
+
+To reach the engine when you're away, put your PC and phone on the same private
+[Tailscale](https://tailscale.com) network. It's encrypted, needs no router/port-forward config,
+and — unlike forwarding port 50021 — **does not expose the engine to the public internet**. (The
+VOICEVOX engine has no authentication, so it must never be port-forwarded to the open web.)
+
+**On your PC (Arch):**
+
+```bash
+sudo pacman -S tailscale
+sudo systemctl enable --now tailscaled
+sudo tailscale up                # opens a browser to log in
+tailscale ip -4                  # note the 100.x.y.z address
+```
+
+The engine already binds `0.0.0.0:50021` (see the compose file), so once Tailscale is up it's
+reachable on your tailnet automatically — no change to `docker-compose.yml` needed.
+
+**On your phone:**
+
+1. Install the Tailscale app, log in with the same account, and keep it connected. (Tailscale
+   routes only your tailnet traffic; normal browsing is unaffected.)
+2. In the reader: **Settings → VOICEVOX → Engine URL** = `http://100.x.y.z:50021` (the address
+   from `tailscale ip -4`).
+
+That URL works both at home and away, so you can leave it set. Optionally enable MagicDNS in the
+Tailscale admin console and use the PC's machine name instead of the numeric IP.
+
 ## Per-character voices (optional, needs an LLM key)
 
 1. In **Settings**, enable **Character attribution** and paste an Anthropic (Claude) or OpenAI API
