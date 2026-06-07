@@ -116,6 +116,11 @@ class CharacterVoiceViewModel @Inject constructor(
     private suspend fun loadCatalog(): List<EngineVoice> =
         runCatching { engineRegistry.engineFor(VoiceEngineId.VOICEVOX).listVoices() }.getOrDefault(emptyList())
 
+    /** Re-fetch the VOICEVOX voice catalog — used to retry after a transient connectivity failure. */
+    fun reloadCatalog() {
+        viewModelScope.launch { voiceCatalog.value = loadCatalog() }
+    }
+
     /**
      * Saves an edited profile, then re-synthesises the chapter so the new voice is audible right
      * away — no separate attribution/casting pass (the user's manual choice is the source of truth).

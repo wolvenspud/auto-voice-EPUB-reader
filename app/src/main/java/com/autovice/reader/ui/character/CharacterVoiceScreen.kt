@@ -149,7 +149,11 @@ fun CharacterVoiceScreen(
                     CharacterCard(
                         profile = profile,
                         voiceLabel = voiceLabelFor(profile, uiState.voiceCatalog),
-                        onClick = { editing = profile },
+                        onClick = {
+                            editing = profile
+                            // Retry the VOICEVOX catalog on open so a transient failure self-heals.
+                            viewModel.reloadCatalog()
+                        },
                     )
                 }
             }
@@ -264,6 +268,14 @@ private fun VoiceEditor(
                 onClick = { engineId = VoiceEngineId.VOICEVOX },
                 enabled = voicevoxAvailable,
                 label = { Text("VOICEVOX") },
+            )
+        }
+        if (!voicevoxAvailable) {
+            Text(
+                text = "VOICEVOX engine not reachable. Check that the server is running and the URL " +
+                    "in Settings → VOICEVOX is correct (the phone and PC must be on the same network).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
             )
         }
 
