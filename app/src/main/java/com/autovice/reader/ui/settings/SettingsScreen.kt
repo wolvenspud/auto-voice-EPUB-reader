@@ -6,15 +6,18 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -50,6 +53,7 @@ fun SettingsScreen(
 ) {
     val prefs by viewModel.preferences.collectAsState()
     val apiKey by viewModel.apiKeyConfig.collectAsState()
+    val connTest by viewModel.connectionTest.collectAsState()
 
     Scaffold(
         topBar = {
@@ -205,6 +209,23 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
                 )
+
+                // Test VOICEVOX reachability + that the API key works, so failures are diagnosable.
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = { viewModel.testConnections() },
+                        enabled = !connTest.testing,
+                    ) { Text("Test connections") }
+                    if (connTest.testing) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    }
+                }
+                connTest.voicevox?.let { ConnectionResultRow("VOICEVOX", it) }
+                connTest.llm?.let { ConnectionResultRow("API key", it) }
             }
 
             SettingsSection(title = "Advanced") {
@@ -325,4 +346,15 @@ private fun SettingsInfoRow(label: String, value: String) {
         Text(label, style = MaterialTheme.typography.bodyMedium)
         Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
+}
+
+@Composable
+private fun ConnectionResultRow(label: String, status: String) {
+    val ok = status.startsWith("OK")
+    Text(
+        text = "$label: $status",
+        style = MaterialTheme.typography.bodySmall,
+        color = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+        modifier = Modifier.padding(top = 4.dp),
+    )
 }

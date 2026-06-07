@@ -61,6 +61,13 @@ data class CharacterVoiceUiState(
     val voiceCatalog: List<EngineVoice> = emptyList(),
 )
 
+/** Result of the auto-casting step, so the Generate flow can alert on engine failures. */
+private sealed interface CastOutcome {
+    data object Ok : CastOutcome
+    data object VoicevoxDown : CastOutcome
+    data class Failed(val message: String) : CastOutcome
+}
+
 @HiltViewModel
 class CharacterVoiceViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
@@ -132,9 +139,9 @@ class CharacterVoiceViewModel @Inject constructor(
                 voiceRepository.updateProfileAndInvalidate(bookId, profile)
                 withContext(Dispatchers.IO) { deleteCachedAudio() }
                 refresh.value = RefreshUiState.Running(0f, "Recompiling audio…")
-                val ok = awaitSynthesis()
-                refresh.value = if (ok) RefreshUiState.Done("Voice saved — audio recompiled") else
-                    RefreshUiState.Error("Synthesis failed")
+                val synthError = awaitSynthesis()
+                refresh.value = if (synthError == null) RefreshUiState.Done("Voice saved — audio recompiled") else
+                    RefreshUiState.Error("Synthesis failed: $synthError")
             } catch (e: Exception) {
                 refresh.value = RefreshUiState.Error(e.message ?: "Recompile failed")
             }
@@ -199,6 +206,7 @@ class CharacterVoiceViewModel @Inject constructor(
                     refresh.value = RefreshUiState.Error("No text in this chapter to synthesise"); return@launch
                 }
 
+                var castOutcome: CastOutcome? = null
                 if (useLlm) {
                     // 1. Identify speakers. Re-run if this chapter isn't LLM-attributed yet, or if the
                     //    book still has no characters at all (a prior run found none / failed).
@@ -208,25 +216,45 @@ class CharacterVoiceViewModel @Inject constructor(
                         segments.none { it.attributionSource == AttributionSource.LLM } || !hasCharacters
                     if (needsAttribution) {
                         refresh.value = RefreshUiState.Running(null, "Identifying speakers…")
-                        if (!awaitAttribution()) {
+                        val attrError = awaitAttribution()
+                        if (attrError != null) {
                             refresh.value = RefreshUiState.Error(
-                                "Speaker attribution failed — check your API key in Settings",
+                                "Couldn't identify speakers (${config.provider.name.lowercase()}): $attrError. " +
+                                    "Check your API key and connection in Settings.",
                             )
                             return@launch
                         }
                     }
-                    // 2. Give any not-yet-cast characters a VOICEVOX voice. Best-effort: if VOICEVOX
-                    //    is unreachable or casting errors, characters keep their device-TTS fallback.
+                    // 2. Give any not-yet-cast characters a VOICEVOX voice.
                     refresh.value = RefreshUiState.Running(null, "Assigning character voices…")
-                    runCatching { castUncastCharacters() }
-                        .onFailure { android.util.Log.w("CharacterVoice", "Casting skipped: ${it.message}") }
+                    castOutcome = castUncastCharacters()
                 }
 
-                // 3. Synthesise the chapter with the resolved voices.
+                // 3. Synthesise the chapter with the resolved voices (always — device TTS is the
+                //    fallback, so the user still gets audio even when an engine is down).
                 refresh.value = RefreshUiState.Running(0f, "Synthesising audio…")
-                val ok = awaitSynthesis()
-                refresh.value = if (ok) RefreshUiState.Done(doneMessage(attributionOn, hasKey)) else
-                    RefreshUiState.Error("Synthesis failed")
+                val synthError = awaitSynthesis()
+
+                refresh.value = when {
+                    synthError != null ->
+                        RefreshUiState.Error("Synthesis failed: $synthError")
+                    attributionOn && !hasKey ->
+                        RefreshUiState.Error(
+                            "No API key set — read in the narrator voice. Add a Claude or OpenAI key " +
+                                "in Settings to get per-character voices.",
+                        )
+                    castOutcome is CastOutcome.VoicevoxDown ->
+                        RefreshUiState.Error(
+                            "VOICEVOX engine unreachable — characters used the device voice. Audio is " +
+                                "ready, but check Settings → VOICEVOX URL and that the server is running.",
+                        )
+                    castOutcome is CastOutcome.Failed ->
+                        RefreshUiState.Error(
+                            "Voice casting failed: ${(castOutcome as CastOutcome.Failed).message}. " +
+                                "Audio uses existing/device voices.",
+                        )
+                    else -> RefreshUiState.Done(doneMessage(attributionOn))
+                }
             } catch (e: Exception) {
                 refresh.value = RefreshUiState.Error(e.message ?: "Refresh failed")
             }
@@ -235,9 +263,8 @@ class CharacterVoiceViewModel @Inject constructor(
 
     fun dismissRefreshStatus() { refresh.value = RefreshUiState.Idle }
 
-    private suspend fun doneMessage(attributionOn: Boolean, hasKey: Boolean): String = when {
+    private suspend fun doneMessage(attributionOn: Boolean): String = when {
         !attributionOn -> "Audio refreshed — narrator voice (character attribution is off in Settings)"
-        !hasKey -> "Audio refreshed — narrator only; add an API key in Settings for character voices"
         else -> {
             val characters = voiceRepository.getVoicesForBook(bookId).count { it.tier != CharacterTier.SYSTEM }
             if (characters > 0) "Audio refreshed — $characters character voice(s)"
@@ -247,13 +274,14 @@ class CharacterVoiceViewModel @Inject constructor(
 
     /**
      * Casts characters (and an uncast narrator) that don't yet have a VOICEVOX voice, preserving any
-     * voice the user — or a previous run — already chose. No-op if VOICEVOX is unreachable.
+     * voice the user — or a previous run — already chose. Reports whether VOICEVOX was reachable and
+     * whether the casting LLM call succeeded, so the caller can alert the user.
      */
-    private suspend fun castUncastCharacters() {
+    private suspend fun castUncastCharacters(): CastOutcome {
         val config = apiKeyStore.current()
-        if (!config.hasActiveKey) return
+        if (!config.hasActiveKey) return CastOutcome.Ok
         val voices = loadCatalog().also { voiceCatalog.value = it }
-        if (voices.isEmpty()) return  // VOICEVOX unreachable — leave characters on device TTS.
+        if (voices.isEmpty()) return CastOutcome.VoicevoxDown
 
         val profiles = voiceRepository.getVoicesForBook(bookId)
         val short = VoiceProfileIds.shortBookId(bookId)
@@ -264,25 +292,30 @@ class CharacterVoiceViewModel @Inject constructor(
         val uncast = chars.filter {
             it.voiceEngineId != VoiceEngineId.VOICEVOX || it.externalVoiceId.isNullOrBlank()
         }
-        if (!narratorNeedsCast && uncast.isEmpty()) return
+        if (!narratorNeedsCast && uncast.isEmpty()) return CastOutcome.Ok
 
         val input = buildList {
             if (narratorNeedsCast) add(CastCharacter("NARRATOR", narrator!!.appearanceCount, null))
             addAll(uncast.map { CastCharacter(it.characterName, it.appearanceCount, it.estimatedGender) })
         }
         val byName = chars.associateBy { it.characterName }
-        for (a in castingClient.cast(config.provider, config.activeKey, input, voices)) {
-            val profile = if (a.character == "NARRATOR") narrator else byName[a.character]
-            profile ?: continue
-            voiceRepository.updateProfileAndInvalidate(
-                bookId,
-                profile.copy(voiceEngineId = VoiceEngineId.VOICEVOX, externalVoiceId = a.speakerId.toString()),
-            )
+        return try {
+            for (a in castingClient.cast(config.provider, config.activeKey, input, voices)) {
+                val profile = if (a.character == "NARRATOR") narrator else byName[a.character]
+                profile ?: continue
+                voiceRepository.updateProfileAndInvalidate(
+                    bookId,
+                    profile.copy(voiceEngineId = VoiceEngineId.VOICEVOX, externalVoiceId = a.speakerId.toString()),
+                )
+            }
+            CastOutcome.Ok
+        } catch (e: Exception) {
+            CastOutcome.Failed(e.message ?: "voice casting failed")
         }
     }
 
-    /** Enqueues attribution for the chapter and suspends until it finishes; true on success. */
-    private suspend fun awaitAttribution(): Boolean {
+    /** Runs attribution for the chapter; returns null on success, or a human-readable error. */
+    private suspend fun awaitAttribution(): String? {
         val request = OneTimeWorkRequestBuilder<AttributionWorker>()
             .setInputData(
                 workDataOf(
@@ -292,11 +325,15 @@ class CharacterVoiceViewModel @Inject constructor(
             )
             .build()
         workManager.enqueue(request)
-        return awaitWorkSuccess(request.id) {}
+        val info = awaitWork(request.id) {}
+        return when (info?.state) {
+            WorkInfo.State.SUCCEEDED -> null
+            else -> info?.outputData?.getString(AttributionWorker.KEY_ERROR) ?: "attribution didn't complete"
+        }
     }
 
-    /** Re-synthesises the chapter (replacing any in-flight run) and suspends until done. */
-    private suspend fun awaitSynthesis(): Boolean {
+    /** Re-synthesises the chapter; returns null on success, or a human-readable error. */
+    private suspend fun awaitSynthesis(): String? {
         val request = OneTimeWorkRequestBuilder<SynthesisWorker>()
             .setInputData(
                 workDataOf(
@@ -306,22 +343,24 @@ class CharacterVoiceViewModel @Inject constructor(
             )
             .build()
         workManager.enqueueUniqueWork("synth_${bookId}_$chapterIndex", ExistingWorkPolicy.REPLACE, request)
-        return awaitWorkSuccess(request.id) { p ->
+        val info = awaitWork(request.id) { p ->
             refresh.value = RefreshUiState.Running(p, "Synthesising audio…")
+        }
+        return when (info?.state) {
+            WorkInfo.State.SUCCEEDED -> null
+            else -> info?.outputData?.getString(SynthesisWorker.KEY_ERROR) ?: "synthesis didn't complete"
         }
     }
 
-    /** Suspends until the given work reaches a terminal state, reporting progress; true if SUCCEEDED. */
-    private suspend fun awaitWorkSuccess(id: UUID, onProgress: (Float) -> Unit): Boolean {
-        val terminal = workManager.getWorkInfoByIdFlow(id)
+    /** Suspends until the given work reaches a terminal state, reporting progress; returns it. */
+    private suspend fun awaitWork(id: UUID, onProgress: (Float) -> Unit): WorkInfo? =
+        workManager.getWorkInfoByIdFlow(id)
             .onEach { info ->
                 if (info?.state == WorkInfo.State.RUNNING) {
                     onProgress(info.progress.getFloat(SynthesisWorker.KEY_PROGRESS, 0f))
                 }
             }
             .first { info -> info != null && info.state.isFinished }
-        return terminal?.state == WorkInfo.State.SUCCEEDED
-    }
 
     private fun deleteCachedAudio() {
         val processedDir = File(libraryRepository.generateBookDir(bookId), "processed")

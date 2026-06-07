@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -78,7 +79,8 @@ fun CharacterVoiceScreen(
                 viewModel.dismissRefreshStatus()
             }
             is RefreshUiState.Error -> {
-                snackbarHost.showSnackbar("Refresh failed: ${r.message}")
+                // Errors/alerts persist longer so a failure (bad key, engine unreachable) is noticed.
+                snackbarHost.showSnackbar(r.message, duration = SnackbarDuration.Long)
                 viewModel.dismissRefreshStatus()
             }
             else -> {}
