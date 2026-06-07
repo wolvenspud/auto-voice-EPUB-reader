@@ -59,6 +59,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 
+/** Adopt the next (longer) audio file once playback is within this much of the current file's end. */
+private const val AUDIO_SWAP_LEAD_MS = 4000L
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReaderScreen(
@@ -109,17 +112,18 @@ fun ReaderScreen(
     LaunchedEffect(controller, uiState.audioPath, uiState.playbackState, uiState.playbackSpeed, seekToMs) {
         val c = controller ?: return@LaunchedEffect
         val path = uiState.audioPath
-        if (path != null && path != loadedPath) {
-            // Preserve playback position when swapping partial→full chapter file.
-            val posToRestore = if (loadedPath != null && c.currentPosition > 0) c.currentPosition else 0L
+        // Load the first audio file as soon as it exists. Subsequent growing partial files are
+        // adopted lazily by the polling loop below — swapping on *every* partial forces a rebuffer
+        // each time, and the audio HAL papers over the gap by repeating a fragment (the "stutter").
+        // Loading lazily keeps swaps to the few actually needed to stay ahead of playback.
+        if (path != null && loadedPath == null) {
             c.setMediaItem(MediaItem.fromUri(Uri.fromFile(File(path))))
             c.prepare()
-            if (posToRestore > 0) c.seekTo(posToRestore)
             loadedPath = path
         }
         c.setPlaybackSpeed(uiState.playbackSpeed)
         when (uiState.playbackState) {
-            PlaybackState.PLAYING -> if (path != null) {
+            PlaybackState.PLAYING -> if (loadedPath != null) {
                 // If the chapter previously played to the end, restart from the top.
                 if (c.playbackState == Player.STATE_ENDED) c.seekTo(0)
                 c.play()
@@ -128,22 +132,39 @@ fun ReaderScreen(
             PlaybackState.IDLE -> c.pause()
             PlaybackState.LOADING -> {}
         }
-        // Tap-to-seek: jump to the tapped sentence (media item is loaded above).
+        // Tap-to-seek: the target may lie beyond the currently-loaded partial, so adopt the latest
+        // (longest) file first, then seek to the tapped sentence.
         seekToMs?.let { ms ->
-            if (path != null) {
+            if (path != null && path != loadedPath) {
+                c.setMediaItem(MediaItem.fromUri(Uri.fromFile(File(path))), ms)
+                c.prepare()
+                loadedPath = path
+            } else if (path != null) {
                 c.seekTo(ms)
-                c.play()
             }
+            if (path != null) c.play()
             viewModel.consumeSeek()
         }
     }
 
-    // While playing, drive the WebView highlight from the player position.
+    // While playing: drive the WebView highlight, and lazily adopt a newer/longer audio file when
+    // playback nears the end of the current one — so growing partials don't stutter mid-paragraph.
     LaunchedEffect(controller, uiState.playbackState) {
         val c = controller ?: return@LaunchedEffect
         if (uiState.playbackState == PlaybackState.PLAYING) {
             while (isActive) {
                 viewModel.updateHighlightFromPosition(c.currentPosition)
+                val target = uiState.audioPath
+                if (target != null && target != loadedPath) {
+                    val dur = c.duration
+                    val nearEnd = dur > 0 && c.currentPosition >= dur - AUDIO_SWAP_LEAD_MS
+                    if (nearEnd || c.playbackState == Player.STATE_ENDED) {
+                        c.setMediaItem(MediaItem.fromUri(Uri.fromFile(File(target))), c.currentPosition.coerceAtLeast(0))
+                        c.prepare()
+                        c.play()
+                        loadedPath = target
+                    }
+                }
                 delay(200)
             }
         }
