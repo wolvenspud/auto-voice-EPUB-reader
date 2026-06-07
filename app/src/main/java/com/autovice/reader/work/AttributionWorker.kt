@@ -17,6 +17,7 @@ import com.autovice.reader.domain.model.VoiceProfileIds
 import com.autovice.reader.llm.AttributionLine
 import com.autovice.reader.llm.AttributionResult
 import com.autovice.reader.llm.LlmAttributionClient
+import com.autovice.reader.llm.LlmReadingClient
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +36,7 @@ class AttributionWorker @AssistedInject constructor(
     private val voiceRepository: CharacterVoiceRepository,
     private val apiKeyStore: ApiKeyStore,
     private val client: LlmAttributionClient,
+    private val readingClient: LlmReadingClient,
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
@@ -104,6 +106,22 @@ class AttributionWorker @AssistedInject constructor(
                 )
             }
             if (newProfiles.isNotEmpty()) voiceRepository.addMissingProfiles(bookId, newProfiles)
+
+            // Dedicated reading-correction pass: a separate LLM call (it only does this reliably as
+            // its sole task) respells context-ambiguous kanji in kana so TTS reads them correctly.
+            // Best-effort — a failure here must not fail attribution.
+            runCatching {
+                chunks.forEach { chunk ->
+                    val corrections = readingClient.correctReadings(config.provider, config.activeKey, chunk)
+                    corrections.forEach { c ->
+                        val segment = segmentByIndex[c.segmentIndex] ?: return@forEach
+                        val override = c.yomi.takeIf { it.isNotBlank() && it != segment.rawText }
+                        if (override != null && override != segment.ttsTextOverride) {
+                            segmentRepository.updateTtsOverride(segment.spanId, override)
+                        }
+                    }
+                }
+            }.onFailure { android.util.Log.w("AttributionWorker", "Reading correction failed: ${it.message}") }
 
             Result.success(workDataOf(KEY_APPLIED to applied))
         } catch (e: Exception) {

@@ -38,6 +38,9 @@ class SegmentRepository @Inject constructor(
         spanId, speakerTag.toStorageString(), voiceProfileId, source.name, confidence,
     )
 
+    suspend fun updateTtsOverride(spanId: String, override: String?) =
+        segmentDao.updateTtsOverride(spanId, override)
+
     suspend fun getSegmentsNeedingResynthesis(bookId: String): List<TtsSegment> =
         segmentDao.getSegmentsNeedingResynthesis(bookId).map { it.toDomain() }
 

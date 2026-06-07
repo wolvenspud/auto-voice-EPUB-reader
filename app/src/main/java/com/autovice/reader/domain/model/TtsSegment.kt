@@ -7,6 +7,12 @@ data class TtsSegment(
     val chapterIndex: Int,
     val segmentIndex: Int,
     val rawText: String,
+    /**
+     * Optional reading-corrected text fed to the TTS engine instead of [rawText], with
+     * context-ambiguous kanji spelled in kana (e.g. お腹が空いた → お腹がすいた). Null when the
+     * reading is unambiguous. [rawText] is always what's shown on screen.
+     */
+    val ttsTextOverride: String? = null,
     val speakerTag: SpeakerTag,
     val voiceProfileId: String,
     val attributionSource: AttributionSource,

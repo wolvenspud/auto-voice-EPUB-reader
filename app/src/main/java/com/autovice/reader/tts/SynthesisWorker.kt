@@ -107,14 +107,17 @@ class SynthesisWorker @AssistedInject constructor(
                 val engineId = profile.voiceEngineId.takeIf { it in readyEngineIds } ?: VoiceEngineId.ANDROID_TTS
                 val engine = engineRegistry.engineFor(engineId)
                 val tempWav = File(tempDir, "seg_${segment.segmentIndex}.wav")
-                var duration = engine.synthesiseToFile(segment.rawText, profile, tempWav)
+                // Feed the engine the reading-corrected text when present (ambiguous kanji spelled in
+                // kana); the on-screen text is unchanged.
+                val ttsText = segment.ttsTextOverride?.takeIf { it.isNotBlank() } ?: segment.rawText
+                var duration = engine.synthesiseToFile(ttsText, profile, tempWav)
                 // A transient engine failure (e.g. a VOICEVOX network hiccup) must not silently drop
                 // the sentence — that leaves a hole in the audio and desyncs the highlight. Retry on
                 // device TTS so every segment still gets spoken and the timeline stays contiguous.
                 if ((duration < 0 || !tempWav.exists()) && engineId != VoiceEngineId.ANDROID_TTS) {
                     android.util.Log.w("SynthesisWorker", "Engine '$engineId' failed seg ${segment.segmentIndex}; falling back to device TTS")
                     duration = engineRegistry.engineFor(VoiceEngineId.ANDROID_TTS)
-                        .synthesiseToFile(segment.rawText, profile, tempWav)
+                        .synthesiseToFile(ttsText, profile, tempWav)
                 }
                 if (duration < 0 || !tempWav.exists()) {
                     // Even the fallback failed: park a zero-length slot at the current offset so a

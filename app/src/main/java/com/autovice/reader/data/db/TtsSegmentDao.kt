@@ -72,6 +72,14 @@ interface TtsSegmentDao {
         confidence: Float,
     )
 
+    /** Stores a reading-corrected TTS text for a segment and flags it for re-synthesis. */
+    @Query("""
+        UPDATE tts_segments
+        SET ttsTextOverride = :override, needsResynthesis = 1
+        WHERE spanId = :spanId
+    """)
+    suspend fun updateTtsOverride(spanId: String, override: String?)
+
     /** Marks all segments using [profileId] as dirty after a voice profile change. */
     @Query("""
         UPDATE tts_segments
