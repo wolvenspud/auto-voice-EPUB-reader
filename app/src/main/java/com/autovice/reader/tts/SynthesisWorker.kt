@@ -74,6 +74,10 @@ class SynthesisWorker @AssistedInject constructor(
             var partialPathEmitted: String? = null
             var partialVersion = 0
             var nextPartialThreshold = INITIAL_BATCH
+            // The gap between partials grows (doubles): frequent early ones let playback start and
+            // stay fed, while sparse later ones avoid re-encoding the whole (long) prefix to AAC
+            // every few segments — that re-encode is the dominant synthesis cost on long chapters.
+            var partialStep = PARTIAL_GROW_STEP
 
             segments.forEachIndexed { i, segment ->
                 // Always carry the partial path once known — WorkManager conflates progress updates,
@@ -169,7 +173,8 @@ class SynthesisWorker @AssistedInject constructor(
                         // Remove the previous version once the new one is ready.
                         partialPathEmitted?.let { old -> File(old).delete() }
                         partialPathEmitted = pAac.absolutePath
-                        nextPartialThreshold = segmentWavFiles.size + PARTIAL_GROW_STEP
+                        nextPartialThreshold = segmentWavFiles.size + partialStep
+                        partialStep = (partialStep * 2).coerceAtMost(MAX_PARTIAL_STEP)
                         setProgressAsync(workDataOf(
                             KEY_PROGRESS to segmentWavFiles.size.toFloat() / segments.size,
                             KEY_PARTIAL_AUDIO_PATH to pAac.absolutePath,
@@ -215,7 +220,9 @@ class SynthesisWorker @AssistedInject constructor(
         const val KEY_PARTIAL_AUDIO_PATH = "partialAudioPath"
         /** Segments to synthesise before the first playable partial is emitted. */
         private const val INITIAL_BATCH = 8
-        /** Additional segments between subsequent (growing) partial re-encodes. */
+        /** Initial gap between partial re-encodes; doubles each time up to [MAX_PARTIAL_STEP]. */
         private const val PARTIAL_GROW_STEP = 12
+        /** Cap on the partial gap, so very long chapters still refresh their buffer periodically. */
+        private const val MAX_PARTIAL_STEP = 64
     }
 }
